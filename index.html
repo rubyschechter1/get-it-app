@@ -173,6 +173,7 @@
   .btn.small{padding:6px 12px; font-size:12px;}
   .btn.block{width:100%;}
   .btn.danger-ghost{background:transparent; border:1px solid var(--danger); color:var(--danger);}
+  .btn.saved-flash{background:#4F6B54 !important; color:#B9E0BE !important;}
   @keyframes checkPop{
     0%{transform:scale(0.4); opacity:0;}
     60%{transform:scale(1.15); opacity:1;}
@@ -195,9 +196,10 @@
   .exercise-head .name{font-family:var(--font-display); font-size:16px; text-transform:uppercase; letter-spacing:0.02em;}
   .set-list{padding:6px 10px;}
   .set-row{
-    display:grid; grid-template-columns:20px 1fr 1fr 1fr 26px; gap:8px; align-items:center;
+    display:grid; grid-template-columns:20px 1fr 1fr 1fr 22px 22px; gap:6px; align-items:center;
     padding:7px 4px; border-bottom:1px solid rgba(255,255,255,0.04);
   }
+  .set-row.set-done{opacity:0.55;}
   .set-row:last-child{border-bottom:none;}
   .set-num{font-family:var(--font-mono); color:var(--text-faint); font-size:12px;}
   .set-row input{
@@ -206,8 +208,15 @@
   }
   .set-row input:focus{border-color:var(--steel);}
   .set-row .rm{background:none; border:none; color:var(--text-faint); font-size:15px;}
+  .set-check{
+    width:20px; height:20px; border-radius:6px; border:1.5px solid var(--line); background:var(--surface-raised);
+    display:flex; align-items:center; justify-content:center; padding:0; flex:none;
+  }
+  .set-check.done{background:#6FA37A; border-color:#6FA37A;}
+  .set-check svg{width:12px; height:12px; color:var(--text-faint);}
+  .set-check.done svg{color:#0f1a12; animation:checkPop 0.32s cubic-bezier(0.34,1.56,0.64,1);}
   .set-labels{
-    display:grid; grid-template-columns:20px 1fr 1fr 1fr 26px; gap:8px;
+    display:grid; grid-template-columns:20px 1fr 1fr 1fr 22px 22px; gap:6px;
     font-family:var(--font-mono); font-size:9px; color:var(--text-faint); text-transform:uppercase; padding:0 4px 4px;
   }
   .exercise-foot{
@@ -329,7 +338,23 @@
   .hist-row:last-child{border-bottom:none;}
   .hist-row .d{font-family:var(--font-mono); font-size:11px; color:var(--text-faint);}
 
+  .cycle-log-entry{padding:10px 2px; border-bottom:1px solid var(--line);}
+  .cycle-log-entry:last-child{border-bottom:none;}
+  .cycle-log-head{display:flex; align-items:center; gap:8px; flex-wrap:wrap;}
+  .cycle-log-head .d{font-family:var(--font-mono); font-size:11px; color:var(--text-faint);}
+  .energy-badge{font-family:var(--font-mono); font-size:10px; color:var(--amber); background:rgba(225,168,87,0.12); padding:2px 8px; border-radius:20px;}
+  .energy-badge.sleep-badge{color:#9986B8; background:rgba(153,134,184,0.12);}
+  .cycle-log-notes{margin-top:6px; font-size:13px; color:var(--text-dim); line-height:1.5; white-space:pre-wrap; word-break:break-word;}
+
   .protein-card{padding:10px 14px;}
+
+  .session-timer-card{padding:10px 14px;}
+  .session-timer-display{display:flex; align-items:center; justify-content:center; gap:8px; padding:4px 0;}
+  .timer-dot{width:8px; height:8px; border-radius:50%; background:var(--rose); flex:none; animation:timerPulse 1.4s ease-in-out infinite;}
+  @keyframes timerPulse{0%,100%{opacity:1;} 50%{opacity:0.3;}}
+  .session-timer-text{font-family:var(--font-display); font-size:24px; font-weight:700; color:var(--text); letter-spacing:0.02em;}
+  .session-timer-finished{display:flex; align-items:center; justify-content:space-between; font-family:var(--font-mono); font-size:13px; color:var(--text-dim);}
+  .link-btn{background:none; border:none; color:var(--steel); font-family:var(--font-mono); font-size:12px; padding:0; text-decoration:underline;}
   .protein-row-compact{display:flex; align-items:center; gap:8px;}
   .protein-value{font-family:var(--font-display); font-size:15px; font-weight:600; color:var(--text-dim); flex:none; min-width:34px;}
   .protein-row-compact input{flex:1; min-width:0; padding:7px 8px;}
@@ -473,6 +498,8 @@
         </div>
       </div>
 
+      <div class="card session-timer-card" id="sessionTimerCard"></div>
+
       <h2 class="section-title" id="exerciseListTitle">Exercises</h2>
       <div id="exerciseList"></div>
 
@@ -480,6 +507,8 @@
         <input type="text" id="newExerciseName" placeholder="Add exercise…">
         <button class="btn small" id="addExerciseBtn">Add</button>
       </div>
+
+      <button class="btn block rose" id="endSessionBtn" style="display:none; margin-bottom:14px;">End Session</button>
 
       <div class="autosave-status" id="autosaveStatus"></div>
     </section>
@@ -502,6 +531,9 @@
 
     <!-- CYCLE TAB -->
     <section id="tab-cycle">
+      <h2 class="section-title">Daily log</h2>
+      <div id="cycleHistory"></div>
+
       <h2 class="section-title">Overview</h2>
       <div class="card" id="cycleOverviewCard"></div>
 
@@ -511,10 +543,10 @@
           <label>Date</label>
           <input type="date" id="cycleDate">
         </div>
-        <label>Phase</label>
-        <div class="phase-choice" id="phaseChoice"></div>
         <label>Energy</label>
         <div class="energy-scale" id="energyScale"></div>
+        <label style="margin-top:12px;">Sleep (last night)</label>
+        <div class="energy-scale" id="sleepScale"></div>
         <div class="field" style="margin-top:12px;">
           <label>Notes</label>
           <textarea id="cycleNotes" rows="2" placeholder="Symptoms, mood, anything worth remembering…"></textarea>
@@ -562,9 +594,6 @@
 
       <h2 class="section-title">Cycle & training</h2>
       <div id="cyclePerformanceCard"></div>
-
-      <h2 class="section-title">Daily log</h2>
-      <div id="cycleHistory"></div>
     </section>
 
     <!-- BACKUP TAB -->
@@ -723,8 +752,8 @@
     cycleSettings: {avgCycleLength:28, periodLength:5},
     periodRanges: [],       // array of {start, end|null}, sorted by start
     cycleEntries: {},       // date -> {phase, energy, notes}
-    selectedCyclePhase: null,
     selectedEnergy: null,
+    selectedSleep: null,
     lastVariationBySlot: {},// slotId -> most recently used variation name
     lastPerformanceBySlot: {}, // slotId/adhoc key -> {date, variation, sets, unilateral, barbell, barWeight}
     planEditMode: false,
@@ -1000,8 +1029,8 @@
     renderHeader();
     await renderWeekStrip();
     await loadSessionForCurrentSelection();
-    renderPhaseChoice();
     renderEnergyScale();
+    renderSleepScale();
     await loadCycleFormForDate($('cycleDate').value);
     await renderProgressExerciseOptions();
     renderCycleHistory();
@@ -1070,12 +1099,7 @@
         <div class="mark">${d.getDate()}</div>
         <div class="cyc ${phase!=='unknown'?phase:''}${phase!=='unknown' && !confirmed ? ' predicted':''}"></div>
       `;
-      pill.addEventListener('click', () => {
-        $('logDate').value = dateStr;
-        if(trained) $('logDaySelect').value = trained.id;
-        loadSessionForCurrentSelection();
-        setActiveTab('tab-log');
-      });
+      pill.addEventListener('click', () => handleCalendarDayClick(dateStr, trained));
       strip.appendChild(pill);
     }
   }
@@ -1108,11 +1132,6 @@
     });
   });
 
-  async function loggedSessionDates(){
-    const keys = await listKeys('session:');
-    return new Set(keys.map(k => k.slice('session:'.length)));
-  }
-
   // Dates where a workout actually happened — some set logged, or an exercise
   // checked off — as opposed to just an intended/scheduled training day.
   async function workoutDates(){
@@ -1135,7 +1154,7 @@
     const startOffset = firstOfMonth.getDay();
     const daysInMonth = new Date(year, month+1, 0).getDate();
     const selectedDate = $('logDate').value || todayStr();
-    const sessionDates = await loggedSessionDates();
+    const sessionDates = await workoutDates();
 
     let cells = '';
     for(let i=0;i<startOffset;i++) cells += `<div class="month-cell empty"></div>`;
@@ -1185,12 +1204,9 @@
     wrap.querySelectorAll('.month-cell[data-date]').forEach(cell => {
       cell.addEventListener('click', () => {
         const dateStr = cell.dataset.date;
-        $('logDate').value = dateStr;
         const dow = new Date(dateStr+'T00:00:00').getDay();
         const trained = DAYS.find(d => d.dow === dow);
-        if(trained) $('logDaySelect').value = trained.id;
-        loadSessionForCurrentSelection();
-        setActiveTab('tab-log');
+        handleCalendarDayClick(dateStr, trained);
       });
     });
   }
@@ -1204,6 +1220,25 @@
   function setActiveTab(id){
     document.querySelectorAll('section').forEach(s => s.classList.toggle('active', s.id===id));
     document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.tab===id));
+  }
+  function isTabActive(id){
+    const section = document.getElementById(id);
+    return !!(section && section.classList.contains('active'));
+  }
+  // Shared by the week strip and month calendar: if you're on the Cycle tab,
+  // clicking a day updates that day's cycle log in place instead of yanking
+  // you over to the Log tab.
+  async function handleCalendarDayClick(dateStr, trained){
+    $('logDate').value = dateStr; // keeps the calendar's own selection highlight in sync either way
+    if(isTabActive('tab-cycle')){
+      $('cycleDate').value = dateStr;
+      await loadCycleFormForDate(dateStr);
+      await renderCalendars();
+      return;
+    }
+    if(trained) $('logDaySelect').value = trained.id;
+    await loadSessionForCurrentSelection();
+    setActiveTab('tab-log');
   }
   document.querySelectorAll('.nav-btn').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -1247,6 +1282,8 @@
     const plan = state.plans[dayId] || [];
     return {
       date, dayId,
+      sessionStart: null,    // timestamp (ms) while a session timer is running
+      sessionDuration: null, // seconds, once ended
       exercises: plan.map(s => ({
         slotId: s.id,
         target: s.target,
@@ -1277,6 +1314,7 @@
       renderPhasePill();
       setAutosaveStatus('');
       await renderProteinCard();
+      renderSessionTimer();
       return;
     }
 
@@ -1292,6 +1330,7 @@
     renderPhasePill();
     setAutosaveStatus('');
     await renderProteinCard();
+    renderSessionTimer();
   }
 
   $('logDate').addEventListener('change', loadSessionForCurrentSelection);
@@ -1367,6 +1406,65 @@
     return `<div class="prev-line">Last ${fmtDate(perf.date)}${varyNote}: <strong>${summary}</strong></div>`;
   }
 
+  // ---------- SESSION TIMER ----------
+  let sessionTimerInterval = null;
+  function formatDuration(totalSeconds){
+    totalSeconds = Math.max(0, Math.round(totalSeconds));
+    const h = Math.floor(totalSeconds/3600);
+    const m = Math.floor((totalSeconds%3600)/60);
+    const s = totalSeconds%60;
+    if(h>0) return `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+    return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+  }
+
+  function renderSessionTimer(){
+    const card = $('sessionTimerCard');
+    const endBtn = $('endSessionBtn');
+    if(sessionTimerInterval){ clearInterval(sessionTimerInterval); sessionTimerInterval = null; }
+    if(!card || !state.session){ if(endBtn) endBtn.style.display = 'none'; return; }
+
+    const { sessionStart, sessionDuration } = state.session;
+    if(sessionStart){
+      // running
+      card.innerHTML = `<div class="session-timer-display"><span class="timer-dot"></span><span class="session-timer-text" id="sessionTimerText">00:00</span></div>`;
+      const tick = () => {
+        const el = document.getElementById('sessionTimerText');
+        if(el) el.textContent = formatDuration((Date.now()-sessionStart)/1000);
+      };
+      tick();
+      sessionTimerInterval = setInterval(tick, 1000);
+      if(endBtn) endBtn.style.display = '';
+    } else if(sessionDuration){
+      card.innerHTML = `<div class="session-timer-finished"><span>Workout: ${formatDuration(sessionDuration)}</span><button class="link-btn" id="resetSessionTimerBtn">Start again</button></div>`;
+      const resetBtn = document.getElementById('resetSessionTimerBtn');
+      if(resetBtn) resetBtn.addEventListener('click', async () => {
+        state.session.sessionDuration = null;
+        renderSessionTimer();
+        await saveCurrentSession();
+      });
+      if(endBtn) endBtn.style.display = 'none';
+    } else {
+      card.innerHTML = `<button class="btn block" id="startSessionBtn">Start Session</button>`;
+      const startBtn = document.getElementById('startSessionBtn');
+      if(startBtn) startBtn.addEventListener('click', async () => {
+        state.session.sessionStart = Date.now();
+        renderSessionTimer();
+        await saveCurrentSession();
+      });
+      if(endBtn) endBtn.style.display = 'none';
+    }
+  }
+
+  $('endSessionBtn').addEventListener('click', async () => {
+    if(!state.session || !state.session.sessionStart) return;
+    const duration = (Date.now() - state.session.sessionStart) / 1000;
+    state.session.sessionDuration = Math.round(duration);
+    state.session.sessionStart = null;
+    renderSessionTimer();
+    await saveCurrentSession();
+    if(navigator.vibrate) navigator.vibrate(40);
+  });
+
   function renderExerciseList(){
     if(state.planEditMode){ renderPlanEditor(); return; }
     const wrap = $('exerciseList');
@@ -1399,7 +1497,7 @@
           <span>lb · total = per side ×2 + bar</span>
         </div>` : ''}
         ${variations && variations.length>1 ? `<div class="variation-row" data-varrow="${exIdx}"></div>` : ''}
-        <div class="set-labels"><div></div><div>Weight</div><div>Reps</div><div>Rest</div><div></div></div>
+        <div class="set-labels"><div></div><div>Weight</div><div>Reps</div><div>Rest</div><div></div><div></div></div>
         <div class="set-list" data-idx="${exIdx}"></div>
         <div class="exercise-foot">
           <button class="btn ghost small add-set" data-idx="${exIdx}">+ Set</button>
@@ -1466,7 +1564,7 @@
       const ex = state.session.exercises[i];
       const sets = ex.sets;
       const last = sets[sets.length-1];
-      const newSet = {weight: last?last.weight:'', reps: last?last.reps:'', rest: last?last.rest:''};
+      const newSet = {weight: last?last.weight:'', reps: last?last.reps:'', rest: last?last.rest:'', checked: false};
       if(ex.singleArm) newSet.side = (last && last.side === 'L') ? 'R' : 'L';
       sets.push(newSet);
       renderSets(i);
@@ -1512,7 +1610,7 @@
     container.innerHTML = '';
     sets.forEach((s, sIdx) => {
       const row = document.createElement('div');
-      row.className = 'set-row';
+      row.className = 'set-row' + (s.checked ? ' set-done' : '');
       const prev = prevSets[sIdx];
       const sideLabel = ex.singleArm
         ? `<button class="side-chip side-${s.side||'L'}" data-side="${sIdx}">${s.side||'L'}</button>`
@@ -1525,6 +1623,7 @@
         </div>
         <input type="number" inputmode="numeric" value="${s.reps}" placeholder="${prev&&prev.reps?prev.reps:'0'}" data-field="reps">
         <input type="number" inputmode="numeric" value="${s.rest}" placeholder="${prev&&prev.rest?prev.rest:'sec'}" min="0" data-field="rest">
+        <button class="set-check ${s.checked?'done':''}" title="Mark this set done"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg></button>
         <button class="rm">✕</button>
       `;
       row.querySelectorAll('input').forEach(inp => {
@@ -1540,6 +1639,11 @@
       const sideBtn = row.querySelector('.side-chip');
       if(sideBtn) sideBtn.addEventListener('click', () => {
         sets[sIdx].side = sets[sIdx].side === 'L' ? 'R' : 'L';
+        renderSets(exIdx);
+        scheduleAutosave();
+      });
+      row.querySelector('.set-check').addEventListener('click', () => {
+        sets[sIdx].checked = !sets[sIdx].checked;
         renderSets(exIdx);
         scheduleAutosave();
       });
@@ -1750,9 +1854,9 @@
       }
 
       state.planEditMode = false;
-      alertToast((ok && renameOk) ? 'Plan saved' : "Couldn't save — try again");
       await loadSessionForCurrentSelection();
       renderWeekOverview();
+      setAutosaveStatus((ok && renameOk) ? 'Plan saved' : "Couldn't save — try again");
     });
   }
 
@@ -1812,13 +1916,11 @@
     if(state.session) await saveCurrentSession();
   }
 
-  function alertToast(msg){
-    const btn = event ? event.target : null;
-    const original = btn ? btn.textContent : null;
-    if(btn){
-      btn.textContent = msg;
-      setTimeout(() => { btn.textContent = original; }, 1400);
-    }
+  function alertToast(msg, btn){
+    if(!btn) return;
+    const original = btn.textContent;
+    btn.textContent = msg;
+    setTimeout(() => { btn.textContent = original; }, 1400);
   }
 
   // ---------- WEEK OVERVIEW (this week's targets, any variation counts) ----------
@@ -2138,26 +2240,6 @@
   }
 
   // ---------- CYCLE TAB ----------
-  function renderPhaseChoice(){
-    const wrap = $('phaseChoice');
-    wrap.innerHTML = '';
-    PHASES.forEach(p => {
-      const btn = document.createElement('button');
-      btn.className = 'phase-btn';
-      btn.textContent = PHASE_LABEL[p];
-      btn.dataset.phase = p;
-      btn.addEventListener('click', () => {
-        state.selectedCyclePhase = state.selectedCyclePhase === p ? null : p;
-        updatePhaseChoiceUI();
-      });
-      wrap.appendChild(btn);
-    });
-  }
-  function updatePhaseChoiceUI(){
-    document.querySelectorAll('.phase-btn').forEach(b => {
-      b.className = 'phase-btn' + (b.dataset.phase===state.selectedCyclePhase ? ' sel-'+b.dataset.phase : '');
-    });
-  }
   function renderEnergyScale(){
     const wrap = $('energyScale');
     wrap.innerHTML = '';
@@ -2174,31 +2256,65 @@
     }
   }
   function updateEnergyUI(){
-    document.querySelectorAll('.energy-dot').forEach(d => {
+    $('energyScale').querySelectorAll('.energy-dot').forEach(d => {
       d.classList.toggle('sel', +d.dataset.val === state.selectedEnergy);
+    });
+  }
+
+  function renderSleepScale(){
+    const wrap = $('sleepScale');
+    wrap.innerHTML = '';
+    for(let i=1;i<=5;i++){
+      const d = document.createElement('button');
+      d.className = 'energy-dot';
+      d.textContent = i;
+      d.dataset.val = i;
+      d.addEventListener('click', () => {
+        state.selectedSleep = state.selectedSleep === i ? null : i;
+        updateSleepUI();
+      });
+      wrap.appendChild(d);
+    }
+  }
+  function updateSleepUI(){
+    $('sleepScale').querySelectorAll('.energy-dot').forEach(d => {
+      d.classList.toggle('sel', +d.dataset.val === state.selectedSleep);
     });
   }
 
   async function loadCycleFormForDate(date){
     const entry = state.cycleEntries[date];
-    state.selectedCyclePhase = entry ? entry.phase : null;
+    // Phase is no longer manually set here — it's always derived automatically
+    // from your logged period dates (see phaseForDate). We still keep any
+    // phase value already saved on old entries (loaded via state.cycleEntries)
+    // so historical data isn't discarded, it's just no longer editable here.
     state.selectedEnergy = entry ? entry.energy : null;
+    state.selectedSleep = entry ? entry.sleep : null;
     $('cycleNotes').value = entry ? (entry.notes||'') : '';
-    updatePhaseChoiceUI();
     updateEnergyUI();
+    updateSleepUI();
   }
   $('cycleDate').addEventListener('change', () => loadCycleFormForDate($('cycleDate').value));
 
   $('saveCycleBtn').addEventListener('click', async () => {
     const date = $('cycleDate').value;
     const entry = {
-      phase: state.selectedCyclePhase,
+      phase: (state.cycleEntries[date] && state.cycleEntries[date].phase) || null, // preserve an old manual override if one exists; never set a new one
       energy: state.selectedEnergy,
+      sleep: state.selectedSleep,
       notes: $('cycleNotes').value.trim()
     };
     state.cycleEntries[date] = entry;
     const ok = await setJSON('cycle:'+date, entry);
-    alertToast(ok ? 'Saved' : "Couldn't save — try again");
+    const btn = $('saveCycleBtn');
+    if(ok){
+      const original = btn.textContent;
+      btn.textContent = '✓ Saved';
+      btn.classList.add('saved-flash');
+      setTimeout(() => { btn.textContent = original; btn.classList.remove('saved-flash'); }, 1500);
+    } else {
+      alertToast("Couldn't save — try again", btn);
+    }
     await renderCalendars();
     renderHeader();
     renderCycleHistory();
@@ -2240,7 +2356,7 @@
     const start = $('periodStartDateInput').value;
     const end = $('periodEndDateInput').value || null;
     const {added, ok, updated} = await addPeriodRange(start, end);
-    alertToast(!added ? 'Already logged' : ok ? (updated?'Updated':'Added') : "Added, but didn't sync — try again");
+    alertToast(!added ? 'Already logged' : ok ? (updated?'Updated':'Added') : "Added, but didn't sync — try again", $('addPeriodStartBtn'));
     $('periodEndDateInput').value = '';
     await refreshAllCycleUI();
   });
@@ -2256,7 +2372,7 @@
       if(added){ addedCount++; if(!ok) syncFailed = true; }
     }
     $('periodBulkInput').value = '';
-    alertToast(`Added ${addedCount}${badCount ? ', skipped '+badCount : ''}${syncFailed ? ' (sync issue)' : ''}`);
+    alertToast(`Added ${addedCount}${badCount ? ', skipped '+badCount : ''}${syncFailed ? ' (sync issue)' : ''}`, $('addPeriodBulkBtn'));
     await refreshAllCycleUI();
   });
 
@@ -2357,9 +2473,13 @@
     await refreshAllCycleUI();
   });
 
+  function escapeHtml(s){
+    return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
   function renderCycleHistory(){
     const entries = Object.keys(state.cycleEntries)
-      .filter(d => state.cycleEntries[d])
+      .filter(d => state.cycleEntries[d] && (state.cycleEntries[d].notes || state.cycleEntries[d].energy || state.cycleEntries[d].sleep || state.cycleEntries[d].phase))
       .sort().reverse().slice(0,14);
     const wrap = $('cycleHistory');
     if(entries.length === 0){
@@ -2369,10 +2489,14 @@
     wrap.innerHTML = entries.map(d => {
       const e = state.cycleEntries[d];
       const phase = e.phase || predictPhase(d);
-      return `<div class="hist-row">
-        <span class="d">${fmtDate(d)}</span>
-        <span class="best">${e.energy?('Energy '+e.energy+'/5'):(e.notes?e.notes.slice(0,20):'—')}</span>
-        <span class="phase-tag ${phase}">${PHASE_LABEL[phase]}</span>
+      return `<div class="cycle-log-entry">
+        <div class="cycle-log-head">
+          <span class="d">${fmtDate(d)}</span>
+          <span class="phase-tag ${phase}">${PHASE_LABEL[phase]}</span>
+          ${e.energy ? `<span class="energy-badge">Energy ${e.energy}/5</span>` : ''}
+          ${e.sleep ? `<span class="energy-badge sleep-badge">Sleep ${e.sleep}/5</span>` : ''}
+        </div>
+        ${e.notes ? `<div class="cycle-log-notes">${escapeHtml(e.notes)}</div>` : ''}
       </div>`;
     }).join('');
   }
