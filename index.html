@@ -276,6 +276,14 @@
   }
   .plan-edit-slot-head{display:flex; gap:8px; align-items:center; margin-bottom:10px;}
   .plan-edit-slot-head input[type=text]{flex:1;}
+  .plan-edit-pos{
+    width:20px; height:20px; border-radius:5px; background:var(--surface-raised); border:1px solid var(--line);
+    display:flex; align-items:center; justify-content:center; flex:none;
+    font-family:var(--font-mono); font-size:10px; color:var(--text-faint);
+  }
+  .reorder-btns{display:flex; flex-direction:column; gap:2px; flex:none;}
+  .reorder-btns .icon-btn{width:24px; height:15px; font-size:9px; border-radius:4px; padding:0;}
+  .reorder-btns .icon-btn:disabled{opacity:0.25;}
   .plan-edit-variations{display:flex; flex-wrap:wrap; gap:6px; margin-bottom:8px;}
   .plan-edit-var-chip{
     display:flex; align-items:center; gap:5px; background:var(--surface-raised); border:1px solid var(--line);
@@ -1529,7 +1537,12 @@
       block.className = 'plan-edit-slot';
       block.innerHTML = `
         <div class="plan-edit-slot-head">
+          <span class="plan-edit-pos">${sIdx+1}</span>
           <input type="text" value="${s.target.replace(/"/g,'&quot;')}" data-field="target" data-idx="${sIdx}" placeholder="Movement name">
+          <div class="reorder-btns">
+            <button class="icon-btn move-up" data-idx="${sIdx}" ${sIdx===0?'disabled':''} title="Move up">▲</button>
+            <button class="icon-btn move-down" data-idx="${sIdx}" ${sIdx===plan.length-1?'disabled':''} title="Move down">▼</button>
+          </div>
           <button class="icon-btn rm-slot" data-idx="${sIdx}">✕</button>
         </div>
         <div class="plan-edit-variations" data-varlist="${sIdx}"></div>
@@ -1553,6 +1566,19 @@
       wrap.appendChild(block);
       renderPlanEditVariations(sIdx, plan);
     });
+
+    wrap.querySelectorAll('.move-up').forEach(b => b.addEventListener('click', () => {
+      const i = +b.dataset.idx;
+      if(i <= 0) return;
+      [plan[i-1], plan[i]] = [plan[i], plan[i-1]];
+      renderPlanEditor();
+    }));
+    wrap.querySelectorAll('.move-down').forEach(b => b.addEventListener('click', () => {
+      const i = +b.dataset.idx;
+      if(i >= plan.length-1) return;
+      [plan[i], plan[i+1]] = [plan[i+1], plan[i]];
+      renderPlanEditor();
+    }));
 
     const addSlotBtn = document.createElement('button');
     addSlotBtn.className = 'btn ghost block';
@@ -1606,10 +1632,28 @@
       state.planEditMode = false;
       renderExerciseList();
     });
+    // Re-sequences the current session's exercises to match a newly edited
+    // plan's order, keeping already-entered set data intact. Needed because
+    // loadSessionForCurrentSelection() deliberately won't re-fetch a session
+    // for the date/day already in view (that guard exists to protect against
+    // a storage read wiping good in-memory data — see loadSessionForCurrentSelection).
+    function reorderSessionToMatchPlan(dayId, planForDay){
+      if(!state.session || state.session.dayId !== dayId) return;
+      const remaining = state.session.exercises.slice();
+      const ordered = [];
+      planForDay.forEach(s => {
+        const idx = remaining.findIndex(e => e.slotId === s.id);
+        if(idx !== -1){ ordered.push(remaining[idx]); remaining.splice(idx,1); }
+      });
+      ordered.push(...remaining); // ad-hoc exercises / removed slots, kept at the end
+      state.session.exercises = ordered;
+    }
+
     $('savePlanEditBtn').addEventListener('click', async () => {
       const cleaned = plan.filter(s => s.target.trim() && s.variations.length);
       const ok = await setJSON('plan:'+dayId, cleaned);
       state.plans[dayId] = cleaned;
+      reorderSessionToMatchPlan(dayId, cleaned);
 
       const newLabel = $('dayLabelInput').value.trim();
       const newType = $('dayTypeInput').value.trim();
