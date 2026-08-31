@@ -355,6 +355,7 @@
   .session-timer-text{font-family:var(--font-display); font-size:24px; font-weight:700; color:var(--text); letter-spacing:0.02em;}
   .session-timer-finished{display:flex; align-items:center; justify-content:space-between; font-family:var(--font-mono); font-size:13px; color:var(--text-dim);}
   .link-btn{background:none; border:none; color:var(--steel); font-family:var(--font-mono); font-size:12px; padding:0; text-decoration:underline;}
+  .past-logs-toggle{display:block; margin:10px 2px 18px;}
   .protein-row-compact{display:flex; align-items:center; gap:8px;}
   .protein-value{font-family:var(--font-display); font-size:15px; font-weight:600; color:var(--text-dim); flex:none; min-width:34px;}
   .protein-row-compact input{flex:1; min-width:0; padding:7px 8px;}
@@ -532,7 +533,9 @@
     <!-- CYCLE TAB -->
     <section id="tab-cycle">
       <h2 class="section-title">Daily log</h2>
-      <div id="cycleHistory"></div>
+      <div id="cycleTodayLog"></div>
+      <button class="link-btn past-logs-toggle" id="togglePastLogsBtn">Show past logs</button>
+      <div id="cyclePastLogs" style="display:none;"></div>
 
       <h2 class="section-title">Overview</h2>
       <div class="card" id="cycleOverviewCard"></div>
@@ -2477,29 +2480,51 @@
     return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   }
 
-  function renderCycleHistory(){
-    const entries = Object.keys(state.cycleEntries)
-      .filter(d => state.cycleEntries[d] && (state.cycleEntries[d].notes || state.cycleEntries[d].energy || state.cycleEntries[d].sleep || state.cycleEntries[d].phase))
-      .sort().reverse().slice(0,14);
-    const wrap = $('cycleHistory');
-    if(entries.length === 0){
-      wrap.innerHTML = `<div class="empty">No cycle days logged yet.</div>`;
-      return;
-    }
-    wrap.innerHTML = entries.map(d => {
-      const e = state.cycleEntries[d];
-      const phase = e.phase || predictPhase(d);
-      return `<div class="cycle-log-entry">
-        <div class="cycle-log-head">
-          <span class="d">${fmtDate(d)}</span>
-          <span class="phase-tag ${phase}">${PHASE_LABEL[phase]}</span>
-          ${e.energy ? `<span class="energy-badge">Energy ${e.energy}/5</span>` : ''}
-          ${e.sleep ? `<span class="energy-badge sleep-badge">Sleep ${e.sleep}/5</span>` : ''}
-        </div>
-        ${e.notes ? `<div class="cycle-log-notes">${escapeHtml(e.notes)}</div>` : ''}
-      </div>`;
-    }).join('');
+  function cycleLogEntryHtml(d, e){
+    const phase = e.phase || predictPhase(d);
+    return `<div class="cycle-log-entry">
+      <div class="cycle-log-head">
+        <span class="d">${fmtDate(d)}</span>
+        <span class="phase-tag ${phase}">${PHASE_LABEL[phase]}</span>
+        ${e.energy ? `<span class="energy-badge">Energy ${e.energy}/5</span>` : ''}
+        ${e.sleep ? `<span class="energy-badge sleep-badge">Sleep ${e.sleep}/5</span>` : ''}
+      </div>
+      ${e.notes ? `<div class="cycle-log-notes">${escapeHtml(e.notes)}</div>` : ''}
+    </div>`;
   }
+
+  let pastLogsExpanded = false;
+
+  function renderCycleHistory(){
+    const today = todayStr();
+    const hasEntry = d => state.cycleEntries[d] && (state.cycleEntries[d].notes || state.cycleEntries[d].energy || state.cycleEntries[d].sleep || state.cycleEntries[d].phase);
+
+    const todayWrap = $('cycleTodayLog');
+    if(todayWrap){
+      todayWrap.innerHTML = hasEntry(today)
+        ? cycleLogEntryHtml(today, state.cycleEntries[today])
+        : `<div class="empty">No log for today yet — save one below.</div>`;
+    }
+
+    const pastDates = Object.keys(state.cycleEntries)
+      .filter(d => d !== today && hasEntry(d))
+      .sort().reverse().slice(0,30);
+
+    const toggleBtn = $('togglePastLogsBtn');
+    const pastWrap = $('cyclePastLogs');
+    if(toggleBtn) toggleBtn.style.display = pastDates.length ? '' : 'none';
+    if(toggleBtn) toggleBtn.textContent = `${pastLogsExpanded ? 'Hide' : 'Show'} past logs (${pastDates.length})`;
+    if(pastWrap){
+      pastWrap.style.display = pastLogsExpanded ? '' : 'none';
+      pastWrap.innerHTML = pastDates.length
+        ? pastDates.map(d => cycleLogEntryHtml(d, state.cycleEntries[d])).join('')
+        : '';
+    }
+  }
+  $('togglePastLogsBtn').addEventListener('click', () => {
+    pastLogsExpanded = !pastLogsExpanded;
+    renderCycleHistory();
+  });
 
   // How rest time, training load, and self-reported energy differ across cycle phases.
   async function renderCyclePerformanceCard(){
