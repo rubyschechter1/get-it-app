@@ -234,6 +234,7 @@
   }
   .autosave-status.show{opacity:1;}
   .add-exercise-row input{flex:1;}
+  .add-exercise-row select{flex:1; min-width:0;}
 
   .exercise-head .name-wrap{display:flex; flex-direction:column; gap:2px;}
   .exercise-head .variation-sub{font-family:var(--font-mono); font-size:11px; color:var(--text-faint);}
@@ -505,9 +506,13 @@
       <div id="exerciseList"></div>
 
       <div class="add-exercise-row">
-        <input type="text" id="newExerciseName" placeholder="Add exercise…">
+        <select id="addExerciseSelect">
+          <option value="">Add a movement…</option>
+          <option value="__custom__">＋ Custom / new movement…</option>
+        </select>
         <button class="btn small" id="addExerciseBtn">Add</button>
       </div>
+      <input type="text" id="newExerciseName" placeholder="New movement name…" style="display:none; margin:-8px 0 14px;">
 
       <button class="btn block rose" id="endSessionBtn" style="display:none; margin-bottom:14px;">End Session</button>
 
@@ -1257,11 +1262,14 @@
     const perfMap = {};
     sessions.forEach(s => {
       (s.exercises||[]).forEach(e => {
-        if(e.slotId && e.variation) varMap[e.slotId] = e.variation;
-        const key = e.slotId || ('adhoc:'+e.target);
+        if(!e.target) return;
+        // Keyed by movement name, not slotId — the same movement (e.g. "Row")
+        // has a different slotId on each day's plan, but should share one
+        // history regardless of which day (or an ad-hoc add) it was logged on.
+        if(e.variation) varMap[e.target] = e.variation;
         const hasData = e.sets && e.sets.some(x => x.weight || x.reps);
         if(hasData){
-          perfMap[key] = {
+          perfMap[e.target] = {
             date: s.date, variation: e.variation, sets: e.sets,
             unilateral: !!e.unilateral, barbell: !!e.barbell, barWeight: e.barWeight
           };
@@ -1272,13 +1280,31 @@
     state.lastPerformanceBySlot = perfMap;
   }
 
-  // Most recent prior logged performance for this exercise (any variation),
-  // excluding the session currently being viewed.
+  // Most recent prior logged performance for this exercise (any variation, any
+  // day, any origin), excluding the session currently being viewed.
   function getPrevPerformance(ex){
-    const key = ex.slotId || ('adhoc:'+ex.target);
-    const perf = state.lastPerformanceBySlot[key];
+    const perf = state.lastPerformanceBySlot[ex.target];
     if(!perf || perf.date === state.session.date) return null;
     return perf;
+  }
+
+  // Finds an existing slot definition for a movement name anywhere across all
+  // 4 days' plans — used both to populate the "add existing movement" picker
+  // and to carry over its usual barbell/unilateral/single-arm settings.
+  function findSlotDefinitionByTarget(target){
+    for(const d of DAYS){
+      const plan = state.plans[d.id] || [];
+      const match = plan.find(s => s.target === target);
+      if(match) return match;
+    }
+    return null;
+  }
+
+  // All distinct movement names defined across every day's plan, sorted.
+  function allKnownMovementNames(){
+    const names = new Set();
+    DAYS.forEach(d => (state.plans[d.id]||[]).forEach(s => names.add(s.target)));
+    return Array.from(names).sort();
   }
 
   function emptySession(dayId, date){
@@ -1295,7 +1321,7 @@
         barWeight: s.barbell ? (s.barWeight || 45) : 45,
         singleArm: !!s.singleArm,
         completed: false,
-        variation: state.lastVariationBySlot[s.id] || s.variations[0],
+        variation: state.lastVariationBySlot[s.target] || s.variations[0],
         sets: []
       }))
     };
@@ -1475,6 +1501,7 @@
     const dayMeta = DAYS.find(d => d.id === state.session.dayId);
     $('exerciseListTitle').textContent = dayMeta ? `${dayMeta.type} — ${fmtDate(state.session.date)}` : 'Exercises';
     $('editPlanBtn').textContent = 'Edit day plan';
+    populateAddExerciseSelect();
 
     state.session.exercises.forEach((ex, exIdx) => {
       const variations = ex.slotId ? variationsForSlot(state.session.dayId, ex.slotId) : null;
@@ -1678,12 +1705,47 @@
     }, 1000)};
   }
 
+  function populateAddExerciseSelect(){
+    const sel = $('addExerciseSelect');
+    if(!sel) return;
+    const prevValue = sel.value;
+    const names = allKnownMovementNames();
+    sel.innerHTML = '<option value="">Add a movement…</option>' +
+      names.map(n => `<option value="${n.replace(/"/g,'&quot;')}">${n}</option>`).join('') +
+      '<option value="__custom__">＋ Custom / new movement…</option>';
+    if(names.includes(prevValue) || prevValue === '__custom__') sel.value = prevValue;
+  }
+
+  $('addExerciseSelect').addEventListener('change', () => {
+    $('newExerciseName').style.display = $('addExerciseSelect').value === '__custom__' ? '' : 'none';
+  });
+
   $('addExerciseBtn').addEventListener('click', () => {
-    const input = $('newExerciseName');
-    const name = input.value.trim();
-    if(!name) return;
-    state.session.exercises.push({slotId:null, target:name, variation:name, unilateral:false, barbell:false, barWeight:45, singleArm:false, completed:false, sets:[]});
-    input.value = '';
+    const sel = $('addExerciseSelect');
+    let target, sourceSlot = null;
+    if(sel.value === '__custom__' || !sel.value){
+      const input = $('newExerciseName');
+      target = input.value.trim();
+      if(!target) return;
+      input.value = '';
+    } else {
+      target = sel.value;
+      sourceSlot = findSlotDefinitionByTarget(target);
+    }
+    const variation = state.lastVariationBySlot[target] || (sourceSlot ? sourceSlot.variations[0] : target);
+    state.session.exercises.push({
+      slotId: null,
+      target,
+      variation,
+      unilateral: sourceSlot ? !!sourceSlot.unilateral : false,
+      barbell: sourceSlot ? !!sourceSlot.barbell : false,
+      barWeight: (sourceSlot && sourceSlot.barbell) ? (sourceSlot.barWeight || 45) : 45,
+      singleArm: sourceSlot ? !!sourceSlot.singleArm : false,
+      completed: false,
+      sets: []
+    });
+    sel.value = '';
+    $('newExerciseName').style.display = 'none';
     renderExerciseList();
     scheduleAutosave();
   });
@@ -1880,7 +1942,17 @@
   // Saves the current session and refreshes everything derived from it.
   async function saveCurrentSession(){
     const ok = await setJSON('session:'+state.session.date, state.session);
-    state.session.exercises.forEach(e => { if(e.slotId && e.variation) state.lastVariationBySlot[e.slotId] = e.variation; });
+    state.session.exercises.forEach(e => {
+      if(!e.target) return;
+      if(e.variation) state.lastVariationBySlot[e.target] = e.variation;
+      const hasData = e.sets && e.sets.some(x => x.weight || x.reps);
+      if(hasData){
+        state.lastPerformanceBySlot[e.target] = {
+          date: state.session.date, variation: e.variation, sets: e.sets,
+          unilateral: !!e.unilateral, barbell: !!e.barbell, barWeight: e.barWeight
+        };
+      }
+    });
     await renderCalendars();
     renderWeekOverview();
     await renderProgressExerciseOptions();
