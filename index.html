@@ -531,6 +531,8 @@
       <div class="card">
         <label>Movement</label>
         <select id="progressExerciseSelect"></select>
+        <label style="margin-top:10px;">Variation</label>
+        <select id="progressVariationSelect"></select>
       </div>
       <div id="progressContent"></div>
     </section>
@@ -2113,6 +2115,7 @@
     sel.innerHTML = '';
     if(names.size === 0){
       sel.innerHTML = '<option value="">No logged sessions yet</option>';
+      $('progressVariationSelect').innerHTML = '';
       $('progressContent').innerHTML = `<div class="empty">Log a session to start seeing progress here.</div>`;
     } else {
       Array.from(names).sort().forEach(n => {
@@ -2121,13 +2124,31 @@
         sel.appendChild(opt);
       });
       sel.value = names.has(prev) ? prev : Array.from(names)[0];
-      renderProgressFor(sel.value, sessions);
+      populateVariationSelect(sel.value, sessions);
     }
     renderTrendsCard(sessions);
   }
   $('progressExerciseSelect').addEventListener('change', async () => {
     const sessions = await getAllSessions();
-    renderProgressFor($('progressExerciseSelect').value, sessions);
+    populateVariationSelect($('progressExerciseSelect').value, sessions);
+  });
+
+  // The variation filter for the currently selected movement — lets you view
+  // one specific variation's own trend (e.g. just Dumbbell Row) instead of
+  // everything blended together, since different variations can have very
+  // different weight ranges.
+  function populateVariationSelect(target, sessions){
+    const rows = rowsForTarget(target, sessions);
+    const variations = Array.from(new Set(rows.map(r => r.variation))).sort();
+    const varSel = $('progressVariationSelect');
+    varSel.innerHTML = `<option value="">All variations</option>` +
+      variations.map(v => `<option value="${v.replace(/"/g,'&quot;')}">${v}</option>`).join('');
+    varSel.value = '';
+    renderProgressFor(target, sessions, '');
+  }
+  $('progressVariationSelect').addEventListener('change', async () => {
+    const sessions = await getAllSessions();
+    renderProgressFor($('progressExerciseSelect').value, sessions, $('progressVariationSelect').value);
   });
 
   function topSet(sets){
@@ -2170,11 +2191,12 @@
     return rows;
   }
 
-  function renderProgressFor(target, sessions){
-    const rows = rowsForTarget(target, sessions);
+  function renderProgressFor(target, sessions, variationFilter){
+    let rows = rowsForTarget(target, sessions);
+    if(variationFilter) rows = rows.filter(r => r.variation === variationFilter);
     const content = $('progressContent');
     if(rows.length === 0){
-      content.innerHTML = `<div class="empty">No logged sets for this movement yet.</div>`;
+      content.innerHTML = `<div class="empty">No logged sets for ${variationFilter ? escapeHtml(variationFilter) : 'this movement'} yet.</div>`;
       return;
     }
     const weights = rows.map(r=>r.weight);
