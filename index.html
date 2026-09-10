@@ -505,16 +505,18 @@
       <h2 class="section-title" id="exerciseListTitle">Exercises</h2>
       <div id="exerciseList"></div>
 
-      <div class="add-exercise-row">
-        <select id="addExerciseSelect">
-          <option value="">Add a movement…</option>
-          <option value="__custom__">＋ Custom / new movement…</option>
-        </select>
-        <button class="btn small" id="addExerciseBtn">Add</button>
+      <div id="sessionAddMovementSection">
+        <div class="add-exercise-row">
+          <select id="addExerciseSelect">
+            <option value="">Add a movement…</option>
+            <option value="__custom__">＋ Custom / new movement…</option>
+          </select>
+          <button class="btn small" id="addExerciseBtn">Add</button>
+        </div>
+        <input type="text" id="newExerciseName" placeholder="New movement name…" style="display:none; margin:-8px 0 14px;">
+        <button class="link-btn" id="manageBankBtn" style="display:block; margin:-8px 0 10px;">Manage movement bank</button>
+        <div id="movementBankPanel" style="display:none; margin-bottom:14px;"></div>
       </div>
-      <input type="text" id="newExerciseName" placeholder="New movement name…" style="display:none; margin:-8px 0 14px;">
-      <button class="link-btn" id="manageBankBtn" style="display:block; margin:-8px 0 10px;">Manage movement bank</button>
-      <div id="movementBankPanel" style="display:none; margin-bottom:14px;"></div>
 
       <button class="btn block rose" id="endSessionBtn" style="display:none; margin-bottom:14px;">End Session</button>
 
@@ -779,9 +781,6 @@
   function slugify(s){
     return String(s).toLowerCase().trim().replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'') || 'slot';
   }
-  // Random id, used only when the user explicitly adds a brand-new movement
-  // via the plan editor (nothing references it yet, so it's safe to be random).
-  function newSlotId(dayId){ return dayId+'-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,6); }
   // Deterministic id derived from the day + movement name. Used for default and
   // migrated slots so that if a background save fails, the same id is
   // regenerated next time instead of drifting — keeping swap options and the
@@ -1541,6 +1540,7 @@
 
   function renderExerciseList(){
     if(state.planEditMode){ renderPlanEditor(); return; }
+    $('sessionAddMovementSection').style.display = '';
     const wrap = $('exerciseList');
     wrap.innerHTML = '';
     const dayMeta = DAYS.find(d => d.id === state.session.dayId);
@@ -1823,6 +1823,7 @@
     const dayMeta = DAYS.find(d => d.id === dayId);
     $('exerciseListTitle').textContent = `Editing plan — ${dayMeta ? dayMeta.type : ''}`;
     $('editPlanBtn').textContent = 'Cancel editing';
+    $('sessionAddMovementSection').style.display = 'none';
 
     const wrap = $('exerciseList');
     wrap.innerHTML = '';
@@ -1892,15 +1893,54 @@
       renderPlanEditor();
     }));
 
-    const addSlotBtn = document.createElement('button');
-    addSlotBtn.className = 'btn ghost block';
-    addSlotBtn.textContent = '+ Add movement to this day';
-    addSlotBtn.style.marginBottom = '14px';
-    addSlotBtn.addEventListener('click', () => {
-      plan.push({id:newSlotId(dayId), target:'New movement', variations:['New movement'], unilateral:false, barbell:false, barWeight:null, singleArm:false});
+    const addRow = document.createElement('div');
+    addRow.className = 'add-exercise-row';
+    addRow.style.marginBottom = '8px';
+    const availableToAdd = allKnownMovementNames().filter(n => !plan.some(s => s.target === n));
+    addRow.innerHTML = `
+      <select id="planAddMovementSelect">
+        <option value="">Add a movement…</option>
+        ${availableToAdd.map(n => `<option value="${n.replace(/"/g,'&quot;')}">${n}</option>`).join('')}
+        <option value="__custom__">＋ Custom / new movement…</option>
+      </select>
+      <button class="btn small" id="planAddMovementBtn">Add</button>
+    `;
+    wrap.appendChild(addRow);
+
+    const planNewNameInput = document.createElement('input');
+    planNewNameInput.type = 'text';
+    planNewNameInput.id = 'planNewMovementName';
+    planNewNameInput.placeholder = 'New movement name…';
+    planNewNameInput.style.cssText = 'display:none; width:100%; margin-bottom:14px;';
+    wrap.appendChild(planNewNameInput);
+
+    $('planAddMovementSelect').addEventListener('change', () => {
+      planNewNameInput.style.display = $('planAddMovementSelect').value === '__custom__' ? '' : 'none';
+    });
+
+    $('planAddMovementBtn').addEventListener('click', () => {
+      const sel = $('planAddMovementSelect');
+      let target, source = null;
+      if(sel.value === '__custom__' || !sel.value){
+        target = planNewNameInput.value.trim();
+        if(!target) return;
+        planNewNameInput.value = '';
+      } else {
+        target = sel.value;
+        source = findSlotDefinitionByTarget(target);
+      }
+      const usedIds = new Set(plan.filter(s => s.id).map(s => s.id));
+      plan.push({
+        id: stableSlotId(dayId, target, usedIds),
+        target,
+        variations: source ? [...source.variations] : [target],
+        unilateral: source ? !!source.unilateral : false,
+        barbell: source ? !!source.barbell : false,
+        barWeight: (source && source.barbell) ? (source.barWeight || 45) : null,
+        singleArm: source ? !!source.singleArm : false,
+      });
       renderPlanEditor();
     });
-    wrap.appendChild(addSlotBtn);
 
     const actions = document.createElement('div');
     actions.className = 'plan-edit-actions';
@@ -1945,7 +1985,9 @@
       renderExerciseList();
     });
     // Re-sequences the current session's exercises to match a newly edited
-    // plan's order, keeping already-entered set data intact. Needed because
+    // plan's order, keeping already-entered set data intact, and creates a
+    // fresh entry for any slot that's brand new to the plan (so it shows up
+    // immediately instead of needing a reload). Needed because
     // loadSessionForCurrentSelection() deliberately won't re-fetch a session
     // for the date/day already in view (that guard exists to protect against
     // a storage read wiping good in-memory data — see loadSessionForCurrentSelection).
@@ -1955,7 +1997,24 @@
       const ordered = [];
       planForDay.forEach(s => {
         const idx = remaining.findIndex(e => e.slotId === s.id);
-        if(idx !== -1){ ordered.push(remaining[idx]); remaining.splice(idx,1); }
+        if(idx !== -1){
+          ordered.push(remaining[idx]);
+          remaining.splice(idx,1);
+        } else {
+          const remembered = state.lastVariationBySlot[s.target];
+          const variation = (remembered && s.variations.includes(remembered)) ? remembered : s.variations[0];
+          ordered.push({
+            slotId: s.id,
+            target: s.target,
+            unilateral: !!s.unilateral,
+            barbell: !!s.barbell,
+            barWeight: s.barbell ? (s.barWeight || 45) : 45,
+            singleArm: !!s.singleArm,
+            completed: false,
+            variation,
+            sets: []
+          });
+        }
       });
       ordered.push(...remaining); // ad-hoc exercises / removed slots, kept at the end
       state.session.exercises = ordered;
