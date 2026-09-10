@@ -513,6 +513,8 @@
         <button class="btn small" id="addExerciseBtn">Add</button>
       </div>
       <input type="text" id="newExerciseName" placeholder="New movement name…" style="display:none; margin:-8px 0 14px;">
+      <button class="link-btn" id="manageBankBtn" style="display:block; margin:-8px 0 10px;">Manage movement bank</button>
+      <div id="movementBankPanel" style="display:none; margin-bottom:14px;"></div>
 
       <button class="btn block rose" id="endSessionBtn" style="display:none; margin-bottom:14px;">End Session</button>
 
@@ -758,6 +760,7 @@
 
   let state = {
     plans: {},              // dayId -> [slot objects: {id, target, variations, unilateral}]
+    movementBank: [],       // movements available anywhere, not tied to a specific day
     session: null,          // current in-progress session object
     cycleSettings: {avgCycleLength:28, periodLength:5},
     periodRanges: [],       // array of {start, end|null}, sorted by start
@@ -765,7 +768,8 @@
     selectedEnergy: null,
     selectedSleep: null,
     lastVariationBySlot: {},// slotId -> most recently used variation name
-    lastPerformanceBySlot: {}, // slotId/adhoc key -> {date, variation, sets, unilateral, barbell, barWeight}
+    lastPerformanceBySlot: {}, // target -> {date, variation, sets, unilateral, barbell, barWeight} (any variation, most recent)
+    lastPerformanceByVariation: {}, // exact variation text -> same shape, for variation-specific "last time"
     planEditMode: false,
     calendarMode: 'week',   // 'week' or 'month'
     calendarMonthDate: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
@@ -821,6 +825,24 @@
     });
     if(changed) await setJSON('plan:'+dayId, plan); // best-effort; app works fine even if this particular save fails
     return plan;
+  }
+
+  // The "movement bank": exercises available to add to any day's session, but
+  // not tied to a specific day's plan. Same shape as a plan slot.
+  async function loadMovementBank(){
+    const bank = await getJSON('movement-bank', []);
+    const usedIds = new Set(bank.filter(s => s && s.id).map(s => s.id));
+    let changed = false;
+    const migrated = bank.map(s => {
+      if(!s.id){ s.id = stableSlotId('bank', s.target, usedIds); changed = true; }
+      if(!Array.isArray(s.variations) || s.variations.length===0){ s.variations = [s.target]; changed = true; }
+      return s;
+    });
+    if(changed) await setJSON('movement-bank', migrated);
+    return migrated;
+  }
+  function saveMovementBank(){
+    return setJSON('movement-bank', state.movementBank);
   }
 
   // ---------- cycle math ----------
@@ -1019,6 +1041,7 @@
     await Promise.all(DAYS.map(async d => {
       state.plans[d.id] = await loadPlanForDay(d.id);
     }));
+    state.movementBank = await loadMovementBank();
     await buildLastVariationMap();
 
     // load cycle entries for last ~40 days for week strip + history
@@ -1261,7 +1284,8 @@
   async function buildLastVariationMap(){
     const sessions = await getAllSessions(); // ascending by date
     const varMap = {};
-    const perfMap = {};
+    const perfByTarget = {};
+    const perfByVariation = {};
     sessions.forEach(s => {
       (s.exercises||[]).forEach(e => {
         if(!e.target) return;
@@ -1271,41 +1295,52 @@
         if(e.variation) varMap[e.target] = e.variation;
         const hasData = e.sets && e.sets.some(x => x.weight || x.reps);
         if(hasData){
-          perfMap[e.target] = {
+          const entry = {
             date: s.date, variation: e.variation, sets: e.sets,
             unilateral: !!e.unilateral, barbell: !!e.barbell, barWeight: e.barWeight
           };
+          perfByTarget[e.target] = entry;
+          if(e.variation) perfByVariation[e.variation] = entry;
         }
       });
     });
     state.lastVariationBySlot = varMap;
-    state.lastPerformanceBySlot = perfMap;
+    state.lastPerformanceBySlot = perfByTarget;
+    state.lastPerformanceByVariation = perfByVariation;
   }
 
-  // Most recent prior logged performance for this exercise (any variation, any
-  // day, any origin), excluding the session currently being viewed.
+  // Most recent prior logged performance for this exercise, excluding the
+  // session currently being viewed. Prefers a match on the exact variation
+  // selected (so picking "Incline" shows incline history, not flat) — only
+  // falling back to "any variation of this movement" if there's no history
+  // for this specific variation yet.
   function getPrevPerformance(ex){
+    const exact = state.lastPerformanceByVariation[ex.variation];
+    if(exact && exact.date !== state.session.date) return exact;
     const perf = state.lastPerformanceBySlot[ex.target];
     if(!perf || perf.date === state.session.date) return null;
     return perf;
   }
 
   // Finds an existing slot definition for a movement name anywhere across all
-  // 4 days' plans — used both to populate the "add existing movement" picker
-  // and to carry over its usual barbell/unilateral/single-arm settings.
+  // 4 days' plans or the movement bank — used both to populate the "add
+  // existing movement" picker and to carry over its usual barbell/unilateral/
+  // single-arm settings.
   function findSlotDefinitionByTarget(target){
     for(const d of DAYS){
       const plan = state.plans[d.id] || [];
       const match = plan.find(s => s.target === target);
       if(match) return match;
     }
-    return null;
+    return state.movementBank.find(s => s.target === target) || null;
   }
 
-  // All distinct movement names defined across every day's plan, sorted.
+  // All distinct movement names defined across every day's plan plus the
+  // movement bank, sorted.
   function allKnownMovementNames(){
     const names = new Set();
     DAYS.forEach(d => (state.plans[d.id]||[]).forEach(s => names.add(s.target)));
+    state.movementBank.forEach(s => names.add(s.target));
     return Array.from(names).sort();
   }
 
@@ -1315,17 +1350,25 @@
       date, dayId,
       sessionStart: null,    // timestamp (ms) while a session timer is running
       sessionDuration: null, // seconds, once ended
-      exercises: plan.map(s => ({
-        slotId: s.id,
-        target: s.target,
-        unilateral: !!s.unilateral,
-        barbell: !!s.barbell,
-        barWeight: s.barbell ? (s.barWeight || 45) : 45,
-        singleArm: !!s.singleArm,
-        completed: false,
-        variation: state.lastVariationBySlot[s.target] || s.variations[0],
-        sets: []
-      }))
+      exercises: plan.map(s => {
+        // Only inherit a "last used" variation if it's actually one this slot
+        // offers — otherwise a day that only ever offers "Incline" could get
+        // silently overridden by "Flat" just because some other day's slot
+        // (sharing the same movement name) was logged more recently.
+        const remembered = state.lastVariationBySlot[s.target];
+        const variation = (remembered && s.variations.includes(remembered)) ? remembered : s.variations[0];
+        return {
+          slotId: s.id,
+          target: s.target,
+          unilateral: !!s.unilateral,
+          barbell: !!s.barbell,
+          barWeight: s.barbell ? (s.barWeight || 45) : 45,
+          singleArm: !!s.singleArm,
+          completed: false,
+          variation,
+          sets: []
+        };
+      })
     };
   }
 
@@ -1614,7 +1657,7 @@
     ).join('');
     row.querySelectorAll('.variation-chip').forEach(chip => chip.addEventListener('click', () => {
       state.session.exercises[exIdx].variation = chip.dataset.v;
-      renderVariationChips(exIdx, variations);
+      renderExerciseList();
       scheduleAutosave();
     }));
   }
@@ -1722,14 +1765,16 @@
     $('newExerciseName').style.display = $('addExerciseSelect').value === '__custom__' ? '' : 'none';
   });
 
-  $('addExerciseBtn').addEventListener('click', () => {
+  $('addExerciseBtn').addEventListener('click', async () => {
     const sel = $('addExerciseSelect');
-    let target, sourceSlot = null;
+    let target, sourceSlot = null, isNew = false;
     if(sel.value === '__custom__' || !sel.value){
       const input = $('newExerciseName');
       target = input.value.trim();
       if(!target) return;
       input.value = '';
+      sourceSlot = findSlotDefinitionByTarget(target);
+      isNew = !sourceSlot;
     } else {
       target = sel.value;
       sourceSlot = findSlotDefinitionByTarget(target);
@@ -1746,6 +1791,13 @@
       completed: false,
       sets: []
     });
+    // A genuinely new name (not already in any day's plan or the bank) gets
+    // remembered in the bank so it shows up in this picker for every future day.
+    if(isNew){
+      const usedIds = new Set(state.movementBank.map(s => s.id));
+      state.movementBank.push({id: stableSlotId('bank', target, usedIds), target, variations:[target], unilateral:false, barbell:false, barWeight:null, singleArm:false});
+      await saveMovementBank();
+    }
     sel.value = '';
     $('newExerciseName').style.display = 'none';
     renderExerciseList();
@@ -1756,6 +1808,14 @@
   $('editPlanBtn').addEventListener('click', () => {
     state.planEditMode = !state.planEditMode;
     renderExerciseList();
+  });
+
+  let bankPanelOpen = false;
+  $('manageBankBtn').addEventListener('click', () => {
+    bankPanelOpen = !bankPanelOpen;
+    $('movementBankPanel').style.display = bankPanelOpen ? '' : 'none';
+    $('manageBankBtn').textContent = bankPanelOpen ? 'Hide movement bank' : 'Manage movement bank';
+    if(bankPanelOpen) renderBankPanel();
   });
 
   function renderPlanEditor(){
@@ -1941,6 +2001,120 @@
     }));
   }
 
+  // Movements available to add to any day's session, without being tied to
+  // one specific day's plan. Same edit UI/shape as a day plan, just not
+  // scoped to a dayId.
+  async function persistBank(){
+    const cleaned = state.movementBank.filter(s => s.target && s.target.trim());
+    await setJSON('movement-bank', cleaned);
+    populateAddExerciseSelect();
+  }
+
+  function renderBankPanel(){
+    const wrap = $('movementBankPanel');
+    wrap.innerHTML = '';
+    const bank = state.movementBank;
+
+    const hint = document.createElement('div');
+    hint.className = 'hint';
+    hint.style.margin = '0 0 12px';
+    hint.textContent = bank.length
+      ? 'Changes here save automatically.'
+      : "No extra movements in your bank yet. Add one below — or it'll grow automatically any time you type a brand-new custom exercise name while logging.";
+    wrap.appendChild(hint);
+
+    bank.forEach((s, sIdx) => {
+      const block = document.createElement('div');
+      block.className = 'plan-edit-slot';
+      block.innerHTML = `
+        <div class="plan-edit-slot-head">
+          <input type="text" value="${s.target.replace(/"/g,'&quot;')}" data-field="target" data-idx="${sIdx}" placeholder="Movement name">
+          <button class="icon-btn rm-slot" data-idx="${sIdx}">✕</button>
+        </div>
+        <div class="plan-edit-variations" data-varlist="${sIdx}"></div>
+        <div class="plan-edit-add-var">
+          <input type="text" placeholder="Add a swap-in variation…" data-addvar="${sIdx}">
+          <button class="btn ghost small add-var-btn" data-idx="${sIdx}">Add</button>
+        </div>
+        <div class="plan-edit-foot">
+          <label><input type="checkbox" data-uni="${sIdx}" ${s.unilateral?'checked':''}> Per-hand / two dumbbells (×2)</label>
+        </div>
+        <div class="plan-edit-foot" style="margin-top:8px;">
+          <label><input type="checkbox" data-bar="${sIdx}" ${s.barbell?'checked':''}> Barbell (weight per side + bar)</label>
+          ${s.barbell ? `<span style="display:flex; align-items:center; gap:6px; font-family:var(--font-mono); font-size:11px; color:var(--text-faint);">
+            <input type="number" data-barw="${sIdx}" value="${s.barWeight||45}" style="width:56px; padding:5px 6px; text-align:center;"> lb bar
+          </span>` : ''}
+        </div>
+        <div class="plan-edit-foot" style="margin-top:8px;">
+          <label><input type="checkbox" data-singlearm="${sIdx}" ${s.singleArm?'checked':''}> Single arm (one dumbbell, one side at a time)</label>
+        </div>
+      `;
+      wrap.appendChild(block);
+      renderPlanEditVariations(sIdx, bank);
+    });
+
+    const addSlotBtn = document.createElement('button');
+    addSlotBtn.className = 'btn ghost block';
+    addSlotBtn.textContent = '+ Add a new movement';
+    addSlotBtn.style.marginBottom = '10px';
+    addSlotBtn.addEventListener('click', async () => {
+      const usedIds = new Set(bank.map(s => s.id));
+      bank.push({id: stableSlotId('bank', 'New movement '+(bank.length+1), usedIds), target:'New movement', variations:['New movement'], unilateral:false, barbell:false, barWeight:null, singleArm:false});
+      renderBankPanel();
+      await persistBank();
+    });
+    wrap.appendChild(addSlotBtn);
+
+    const doneBtn = document.createElement('button');
+    doneBtn.className = 'btn block';
+    doneBtn.textContent = 'Done';
+    doneBtn.addEventListener('click', () => {
+      bankPanelOpen = false;
+      $('movementBankPanel').style.display = 'none';
+      $('manageBankBtn').textContent = 'Manage movement bank';
+    });
+    wrap.appendChild(doneBtn);
+
+    wrap.querySelectorAll('[data-field="target"]').forEach(inp => inp.addEventListener('input', async () => {
+      bank[+inp.dataset.idx].target = inp.value;
+      await persistBank();
+    }));
+    wrap.querySelectorAll('.rm-slot').forEach(b => b.addEventListener('click', async () => {
+      bank.splice(+b.dataset.idx, 1);
+      renderBankPanel();
+      await persistBank();
+    }));
+    wrap.querySelectorAll('.add-var-btn').forEach(b => b.addEventListener('click', async () => {
+      const i = +b.dataset.idx;
+      const input = wrap.querySelector(`[data-addvar="${i}"]`);
+      const val = input.value.trim();
+      if(!val) return;
+      bank[i].variations.push(val);
+      input.value = '';
+      renderPlanEditVariations(i, bank);
+      await persistBank();
+    }));
+    wrap.querySelectorAll('[data-uni]').forEach(cb => cb.addEventListener('change', async () => {
+      bank[+cb.dataset.uni].unilateral = cb.checked;
+      await persistBank();
+    }));
+    wrap.querySelectorAll('[data-bar]').forEach(cb => cb.addEventListener('change', async () => {
+      const i = +cb.dataset.bar;
+      bank[i].barbell = cb.checked;
+      if(cb.checked && !bank[i].barWeight) bank[i].barWeight = 45;
+      renderBankPanel();
+      await persistBank();
+    }));
+    wrap.querySelectorAll('[data-barw]').forEach(inp => inp.addEventListener('input', async () => {
+      bank[+inp.dataset.barw].barWeight = parseFloat(inp.value) || 0;
+      await persistBank();
+    }));
+    wrap.querySelectorAll('[data-singlearm]').forEach(cb => cb.addEventListener('change', async () => {
+      bank[+cb.dataset.singlearm].singleArm = cb.checked;
+      await persistBank();
+    }));
+  }
+
   // Saves the current session and refreshes everything derived from it.
   async function saveCurrentSession(){
     const ok = await setJSON('session:'+state.session.date, state.session);
@@ -1949,10 +2123,12 @@
       if(e.variation) state.lastVariationBySlot[e.target] = e.variation;
       const hasData = e.sets && e.sets.some(x => x.weight || x.reps);
       if(hasData){
-        state.lastPerformanceBySlot[e.target] = {
+        const entry = {
           date: state.session.date, variation: e.variation, sets: e.sets,
           unilateral: !!e.unilateral, barbell: !!e.barbell, barWeight: e.barWeight
         };
+        state.lastPerformanceBySlot[e.target] = entry;
+        if(e.variation) state.lastPerformanceByVariation[e.variation] = entry;
       }
     });
     await renderCalendars();
@@ -2705,10 +2881,11 @@
     DAYS.forEach(d => { dayLabels[d.id] = {label: d.label, type: d.type}; });
     return {
       app: 'getit',
-      version: 6,
+      version: 7,
       exportedAt: new Date().toISOString(),
       plans,
       dayLabels,
+      movementBank: state.movementBank,
       sessions,
       cycleEntries,
       protein,
@@ -2808,6 +2985,10 @@
         const d = DAYS.find(x => x.id === opt.value);
         if(d) opt.textContent = `${d.label} — ${d.type}`;
       });
+    }
+    if(data.movementBank){
+      state.movementBank = data.movementBank;
+      await saveMovementBank();
     }
     if(data.sessions){
       await Promise.all(Object.keys(data.sessions).map(async date => {
