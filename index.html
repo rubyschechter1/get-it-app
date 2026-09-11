@@ -485,22 +485,25 @@
 
       <h2 class="section-title">Session</h2>
       <div class="card">
-        <div class="field-row">
-          <div class="field">
-            <label>Date</label>
-            <input type="date" id="logDate">
-          </div>
-          <div class="field">
-            <label>Day</label>
-            <select id="logDaySelect"></select>
-          </div>
+        <div class="field">
+          <label>Date</label>
+          <input type="date" id="logDate">
         </div>
-        <div class="row">
+        <div class="field" style="margin-top:12px;">
+          <label>Day plan to edit</label>
+          <select id="planDaySelect"></select>
+        </div>
+        <div class="row" style="margin-top:10px;">
           <button class="btn ghost small" id="editPlanBtn">Edit day plan</button>
         </div>
       </div>
 
       <div class="card session-timer-card" id="sessionTimerCard"></div>
+
+      <div class="field" id="workoutDaySelectorRow" style="margin-bottom:14px;">
+        <label>Today's workout</label>
+        <select id="logDaySelect"></select>
+      </div>
 
       <h2 class="section-title" id="exerciseListTitle">Exercises</h2>
       <div id="exerciseList"></div>
@@ -800,6 +803,20 @@
     return setJSON('day-labels', obj);
   }
 
+  // Keeps both day selectors' option text in sync after a rename — the
+  // "today's workout" picker and the "day plan to edit" picker are
+  // independent controls, but they list the same days.
+  function refreshDaySelectLabels(){
+    ['logDaySelect', 'planDaySelect'].forEach(id => {
+      const sel = $(id);
+      if(!sel) return;
+      Array.from(sel.options).forEach(opt => {
+        const d = DAYS.find(x => x.id === opt.value);
+        if(d) opt.textContent = `${d.label} — ${d.type}`;
+      });
+    });
+  }
+
   // Loads a day's plan, migrating old flat string-array plans and filling in
   // any missing ids/variations so every slot is stable and swap-ready.
   async function loadPlanForDay(dayId){
@@ -1035,6 +1052,7 @@
       opt.value = d.id;
       opt.textContent = `${d.label} — ${d.type}`;
       $('logDaySelect').appendChild(opt);
+      $('planDaySelect').appendChild(opt.cloneNode(true));
     });
 
     await Promise.all(DAYS.map(async d => {
@@ -1057,6 +1075,7 @@
     const todayDow = new Date().getDay();
     const match = DAYS.find(d => d.dow === todayDow);
     $('logDaySelect').value = match ? match.id : DAYS[0].id;
+    $('planDaySelect').value = $('logDaySelect').value;
 
     renderHeader();
     await renderWeekStrip();
@@ -1541,6 +1560,7 @@
   function renderExerciseList(){
     if(state.planEditMode){ renderPlanEditor(); return; }
     $('sessionAddMovementSection').style.display = '';
+    $('workoutDaySelectorRow').style.display = '';
     const wrap = $('exerciseList');
     wrap.innerHTML = '';
     const dayMeta = DAYS.find(d => d.id === state.session.dayId);
@@ -1809,6 +1829,9 @@
     state.planEditMode = !state.planEditMode;
     renderExerciseList();
   });
+  $('planDaySelect').addEventListener('change', () => {
+    if(state.planEditMode) renderExerciseList();
+  });
 
   let bankPanelOpen = false;
   $('manageBankBtn').addEventListener('click', () => {
@@ -1819,11 +1842,12 @@
   });
 
   function renderPlanEditor(){
-    const dayId = $('logDaySelect').value;
+    const dayId = $('planDaySelect').value;
     const dayMeta = DAYS.find(d => d.id === dayId);
     $('exerciseListTitle').textContent = `Editing plan — ${dayMeta ? dayMeta.type : ''}`;
     $('editPlanBtn').textContent = 'Cancel editing';
     $('sessionAddMovementSection').style.display = 'none';
+    $('workoutDaySelectorRow').style.display = 'none';
 
     const wrap = $('exerciseList');
     wrap.innerHTML = '';
@@ -2033,10 +2057,7 @@
       if(newType) dayMeta.type = newType;
       if(newLabel || newType){
         renameOk = await saveDayLabels();
-        Array.from($('logDaySelect').options).forEach(opt => {
-          const d = DAYS.find(x => x.id === opt.value);
-          if(d) opt.textContent = `${d.label} — ${d.type}`;
-        });
+        refreshDaySelectLabels();
       }
 
       state.planEditMode = false;
@@ -3040,10 +3061,7 @@
         }
       });
       await saveDayLabels();
-      Array.from($('logDaySelect').options).forEach(opt => {
-        const d = DAYS.find(x => x.id === opt.value);
-        if(d) opt.textContent = `${d.label} — ${d.type}`;
-      });
+      refreshDaySelectLabels();
     }
     if(data.movementBank){
       state.movementBank = data.movementBank;
@@ -3098,6 +3116,66 @@
     renderCycleOverviewCard();
     await renderWeekOverview();
     await renderBackupStatus();
+  });
+
+  // ---------- page lifecycle: don't lose pending saves, don't show a stale date ----------
+
+  // A raw, synchronous save of whatever's pending — skips the debounce and all
+  // the normal follow-up re-rendering, since none of that matters (or is safe
+  // to run) while the page is being hidden/closed/backgrounded. This exists
+  // because localStorage.setItem is synchronous, so unlike the old
+  // network-backed storage, we can actually guarantee this completes in time.
+  function emergencyFlushSave(){
+    if(autosaveTimer){
+      clearTimeout(autosaveTimer);
+      autosaveTimer = null;
+      if(state.session){
+        setJSON('session:'+state.session.date, state.session);
+        state.session.exercises.forEach(e => {
+          if(e.target && e.variation) state.lastVariationBySlot[e.target] = e.variation;
+        });
+      }
+    }
+  }
+  // "visibilitychange" catches backgrounding/locking on mobile far more
+  // reliably than "beforeunload" does; "pagehide" catches actual navigation
+  // away/closing. Attaching all three is cheap and covers the realistic cases.
+  document.addEventListener('visibilitychange', () => {
+    if(document.visibilityState === 'hidden') emergencyFlushSave();
+  });
+  window.addEventListener('pagehide', emergencyFlushSave);
+  window.addEventListener('beforeunload', emergencyFlushSave);
+
+  // If the app is left open (or just backgrounded) across midnight, nothing
+  // was refreshing "today" until you did a hard reload — so it could sit
+  // there showing yesterday indefinitely. Catch the date changing whenever
+  // the tab becomes visible again, and refresh anything that was implicitly
+  // following "today" rather than a date you'd deliberately navigated to.
+  let lastKnownToday = todayStr();
+  document.addEventListener('visibilitychange', async () => {
+    if(document.visibilityState !== 'visible') return;
+    const nowToday = todayStr();
+    if(nowToday === lastKnownToday) return;
+    const wasViewingOldToday = $('logDate').value === lastKnownToday;
+    const wasViewingOldCycleToday = $('cycleDate').value === lastKnownToday;
+    lastKnownToday = nowToday;
+    renderHeader();
+    await renderCalendars();
+    if(wasViewingOldToday){
+      $('logDate').value = nowToday;
+      const todayDow = new Date().getDay();
+      const match = DAYS.find(d => d.dow === todayDow);
+      if(match) $('logDaySelect').value = match.id;
+      await loadSessionForCurrentSelection();
+    }
+    if(wasViewingOldCycleToday){
+      $('cycleDate').value = nowToday;
+      $('cycleDate').max = nowToday;
+      await loadCycleFormForDate(nowToday);
+    }
+    await renderProteinCard();
+    renderCycleOverviewCard();
+    renderCyclePerformanceCard();
   });
 
   init();
