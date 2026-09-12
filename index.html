@@ -884,6 +884,35 @@
     return setJSON('movement-bank', state.movementBank);
   }
 
+  // Makes the bank a permanent catalog: any movement sitting in a day's plan
+  // gets registered into the bank too (if it isn't already), copying its
+  // current variations/settings. This is one-way — it only ever adds, never
+  // removes — so once a movement has existed anywhere, it keeps showing up
+  // in every "Add a movement" picker even after being removed from the day
+  // that introduced it. The only way to make a movement disappear from the
+  // pickers entirely is to delete it from the bank itself.
+  async function backfillMovementBankFromPlans(){
+    let changed = false;
+    const usedIds = new Set(state.movementBank.map(s => s.id));
+    const bankTargets = new Set(state.movementBank.map(s => s.target));
+    DAYS.forEach(d => (state.plans[d.id]||[]).forEach(s => {
+      if(bankTargets.has(s.target)) return;
+      bankTargets.add(s.target);
+      state.movementBank.push({
+        id: stableSlotId('bank', s.target, usedIds),
+        target: s.target,
+        variations: [...s.variations],
+        unilateral: !!s.unilateral,
+        barbell: !!s.barbell,
+        barWeight: s.barbell ? (s.barWeight || 45) : null,
+        singleArm: !!s.singleArm,
+        muscleGroup: s.muscleGroup || 'Other',
+      });
+      changed = true;
+    }));
+    if(changed) await saveMovementBank();
+  }
+
   // ---------- cycle math ----------
   function daysBetween(a,b){
     const A = new Date(a+'T00:00:00'), B = new Date(b+'T00:00:00');
@@ -1082,6 +1111,7 @@
       state.plans[d.id] = await loadPlanForDay(d.id);
     }));
     state.movementBank = await loadMovementBank();
+    await backfillMovementBankFromPlans();
     refreshBankBtnLabel();
     await buildLastVariationMap();
 
@@ -2126,6 +2156,7 @@
       const ok = await setJSON('plan:'+dayId, cleaned);
       state.plans[dayId] = cleaned;
       reorderSessionToMatchPlan(dayId, cleaned);
+      await backfillMovementBankFromPlans();
 
       const newLabel = $('dayLabelInput').value.trim();
       const newType = $('dayTypeInput').value.trim();
@@ -3209,6 +3240,7 @@
       state.movementBank = data.movementBank;
       await saveMovementBank();
     }
+    await backfillMovementBankFromPlans();
     if(data.sessions){
       await Promise.all(Object.keys(data.sessions).map(async date => {
         if(data.sessions[date]) await setJSON('session:'+date, data.sessions[date]);
