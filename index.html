@@ -2636,7 +2636,7 @@
       html += `<div class="hint" style="margin-top:14px;">Log your cycle phase on more training days to see how this movement performs across your cycle.</div>`;
     }
 
-    html += `<h2 class="section-title">History</h2>`;
+    html += `<h2 class="section-title">History (${rows.length} log${rows.length===1?'':'s'})</h2>`;
     html += rows.slice().reverse().map(r => {
       const breakdown = r.barbell ? ` (${r.rawWeight}/side+${r.barWeight})` : r.unilateral ? ` (${r.rawWeight}×2)` : '';
       const sideNote = r.side ? ` ${r.side}` : '';
