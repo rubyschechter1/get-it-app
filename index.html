@@ -2663,7 +2663,7 @@
       const best = topSet(e.sets);
       if(!best || !(parseFloat(best.weight) > 0)) return;
       if(!byTarget[e.target]) byTarget[e.target] = [];
-      byTarget[e.target].push({date:s.date, weight: trueWeight(e, best.weight)});
+      byTarget[e.target].push({date:s.date, weight: trueWeight(e, best.weight), reps: parseFloat(best.reps)||0});
     }));
 
     const loggedSessions = sessions.filter(sessionHasLoggedData);
@@ -2678,16 +2678,24 @@
       return;
     }
 
+    // First-logged vs most-recently-logged top set, rather than averaging an
+    // "early half" against a "late half" — with only 2-3 logs for a movement,
+    // splitting into halves compares lopsided, near-meaningless groups (e.g.
+    // one log vs two). First-vs-latest stays meaningful even with just 2 logs,
+    // and reads more like the plain question "am I lifting more than when I
+    // started this movement?"
     let rows = Object.keys(byTarget).map(target => {
       const arr = byTarget[target].slice().sort((a,b) => a.date < b.date ? -1 : 1);
       if(arr.length < 2) return null;
-      const half = Math.max(1, Math.floor(arr.length/2));
-      const earlyAvg = avg(arr.slice(0, half).map(x=>x.weight));
-      const lateAvg = avg(arr.slice(-half).map(x=>x.weight));
-      const deltaPct = earlyAvg ? ((lateAvg-earlyAvg)/earlyAvg*100) : 0;
-      return {target, earlyAvg: round1(earlyAvg), lateAvg: round1(lateAvg), deltaPct, count:arr.length};
+      const first = arr[0], latest = arr[arr.length-1];
+      const deltaPct = first.weight ? ((latest.weight-first.weight)/first.weight*100) : 0;
+      return {target, first, latest, deltaPct, count:arr.length};
     }).filter(Boolean);
     rows.sort((a,b) => b.deltaPct - a.deltaPct);
+
+    const upCount = rows.filter(r => r.deltaPct > 3).length;
+    const downCount = rows.filter(r => r.deltaPct < -3).length;
+    const flatCount = rows.length - upCount - downCount;
 
     let html = `<div class="stat-grid">
       <div class="stat"><div class="v">${totalSessions}</div><div class="l">Total sessions</div></div>
@@ -2698,6 +2706,7 @@
     if(rows.length === 0){
       html += `<div class="hint">Log the same movement at least twice (any variation) to start seeing trend arrows here.</div>`;
     } else {
+      html += `<div class="hint" style="margin-bottom:10px;">${upCount} movement${upCount===1?'':'s'} trending up, ${flatCount} holding steady, ${downCount} trending down.</div>`;
       html += `<div class="card">` + rows.map(r => {
         const up = r.deltaPct > 3, down = r.deltaPct < -3;
         const arrow = up ? '↑' : down ? '↓' : '→';
@@ -2706,7 +2715,7 @@
         return `<div class="hist-row">
           <span class="best" style="color:var(--text);">${r.target}</span>
           <span class="best" style="color:${color};">${arrow} ${pct}</span>
-          <span class="d">${r.earlyAvg}→${r.lateAvg} lb</span>
+          <span class="d">${round1(r.first.weight)}×${r.first.reps||'–'} → ${round1(r.latest.weight)}×${r.latest.reps||'–'} lb <span style="color:var(--text-faint);">(${r.count} log${r.count===1?'':'s'})</span></span>
         </div>`;
       }).join('') + `</div>`;
     }
