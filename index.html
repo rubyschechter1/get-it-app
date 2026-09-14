@@ -345,6 +345,11 @@
   .wo-day .ps-row:last-child{border-bottom:none;}
   .ps-top{display:flex; justify-content:space-between; align-items:center; gap:8px;}
   .ps-name{font-size:12px; color:var(--text-dim);}
+  .fl-variation-badge{
+    font-family:var(--font-mono); font-size:9px; text-transform:uppercase; letter-spacing:0.03em;
+    color:var(--steel); background:rgba(124,159,190,0.12); padding:2px 6px; border-radius:20px; margin-left:4px;
+  }
+  .fl-variation-badge.missed-badge{color:var(--danger); background:rgba(194,91,78,0.12);}
   .ps-meta{font-family:var(--font-mono); font-size:10px; color:var(--text-faint); flex:none;}
   .ps-badges{display:flex; gap:6px; margin-top:4px;}
   .ps-badge{font-family:var(--font-mono); font-size:9px; text-transform:uppercase; letter-spacing:0.03em; padding:2px 7px; border-radius:20px;}
@@ -673,6 +678,13 @@
         <div class="hint" style="margin-top:0;">Save a backup before you update the app, or any time you just want a copy. This bundles every workout, cycle log, and setting into one file.</div>
         <button class="btn block" id="exportBtn">Generate backup</button>
         <div id="exportResult"></div>
+      </div>
+
+      <h2 class="section-title">Export for a spreadsheet</h2>
+      <div class="card">
+        <div class="hint" style="margin-top:0;">A plain table of every logged set — date, day, exercise, variation, set number, weight, reps, rest — one row per set. Copy it and paste straight into Google Sheets or Excel; it'll split into columns automatically.</div>
+        <button class="btn block ghost" id="exportSheetBtn">Generate spreadsheet export</button>
+        <div id="exportSheetResult"></div>
       </div>
 
       <h2 class="section-title">Restore from a backup</h2>
@@ -2532,36 +2544,69 @@
   }
 
   function fullLogSlotHtml(d, slot, sessions){
-    const key = d.id+'::'+slot.id;
     const rows = fullLogSlotWeeklyRows(d.id, slot.id, sessions);
+    if(rows.length === 0){
+      return `<div class="ps-row"><div class="ps-top"><span class="ps-name">${escapeHtml(slot.target)}</span><span class="ps-meta">No data yet</span></div></div>`;
+    }
+
+    // Group logged weeks by the variation actually used — Cable Row weeks
+    // together, Single Arm Dumbbell Row weeks together — instead of one
+    // blended chronological list. Order follows the slot's own variation
+    // list where possible, then any variation logged that isn't (or no
+    // longer is) in that list. Genuinely missed weeks (the day was trained
+    // but nothing for this slot got logged, no matter the variation) are
+    // kept as their own separate group rather than folded into any one
+    // variation's history, since swapping variations isn't the same as
+    // skipping the exercise.
+    const loggedRows = rows.filter(r => !r.missed);
+    const missedRows = rows.filter(r => r.missed);
+
+    const variationOrder = [];
+    const seen = new Set();
+    (slot.variations||[]).forEach(v => { if(!seen.has(v)){ seen.add(v); variationOrder.push(v); } });
+    loggedRows.forEach(r => { if(r.variation && !seen.has(r.variation)){ seen.add(r.variation); variationOrder.push(r.variation); } });
+
+    const groups = variationOrder
+      .map(v => ({variation: v, rows: loggedRows.filter(r => r.variation === v)}))
+      .filter(g => g.rows.length);
+
+    return groups.map(g => fullLogVariationRowHtml(d, slot, g.variation, g.rows)).join('')
+      + (missedRows.length ? fullLogMissedRowHtml(d, slot, missedRows) : '');
+  }
+
+  function fullLogVariationRowHtml(d, slot, variation, rows){
+    const key = d.id+'::'+slot.id+'::'+variation;
     const open = fullLogOpenSlots.has(key);
-    const doneCount = rows.filter(r => !r.missed).length;
-    const missedCount = rows.filter(r => r.missed).length;
-
-    const metaText = rows.length
-      ? `${doneCount} log${doneCount===1?'':'s'}${missedCount ? ` · ${missedCount} missed` : ''}`
-      : 'No data yet';
-
+    const showBadge = variation && variation !== slot.target;
     const historyHtml = rows.map(r => {
-      if(r.missed){
-        return `<div class="fl-hist-row missed">
-          <span class="fl-hist-date">${fmtDate(r.date)}</span>
-          <span class="fl-hist-sets missed-label">Missed</span>
-        </div>`;
-      }
       const setsStr = r.sets.map(x => `${x.weight || '–'}×${x.reps || '–'}${x.side ? ' '+x.side[0].toUpperCase() : ''}`).join(', ');
       return `<div class="fl-hist-row">
         <span class="fl-hist-date">${fmtDate(r.date)}</span>
         <span class="fl-hist-sets">${setsStr}</span>
       </div>`;
     }).join('');
-
     return `<div class="ps-row">
       <button class="fl-slot-toggle" data-fl-toggle="${key}">
-        <span class="ps-name">${escapeHtml(slot.target)}</span>
-        <span class="ps-meta">${metaText} <span class="fl-caret">${open ? '▲' : '▼'}</span></span>
+        <span class="ps-name">${escapeHtml(slot.target)}${showBadge ? ` <span class="fl-variation-badge">${escapeHtml(variation)}</span>` : ''}</span>
+        <span class="ps-meta">${rows.length} log${rows.length===1?'':'s'} <span class="fl-caret">${open ? '▲' : '▼'}</span></span>
       </button>
-      ${open ? `<div class="fl-history">${historyHtml || '<div class="empty" style="margin:6px 0 0;">No logged sets yet.</div>'}</div>` : ''}
+      ${open ? `<div class="fl-history">${historyHtml}</div>` : ''}
+    </div>`;
+  }
+
+  function fullLogMissedRowHtml(d, slot, missedRows){
+    const key = d.id+'::'+slot.id+'::__missed';
+    const open = fullLogOpenSlots.has(key);
+    const historyHtml = missedRows.map(r => `<div class="fl-hist-row missed">
+        <span class="fl-hist-date">${fmtDate(r.date)}</span>
+        <span class="fl-hist-sets missed-label">Missed</span>
+      </div>`).join('');
+    return `<div class="ps-row">
+      <button class="fl-slot-toggle" data-fl-toggle="${key}">
+        <span class="ps-name">${escapeHtml(slot.target)} <span class="fl-variation-badge missed-badge">Missed</span></span>
+        <span class="ps-meta">${missedRows.length} week${missedRows.length===1?'':'s'} <span class="fl-caret">${open ? '▲' : '▼'}</span></span>
+      </button>
+      ${open ? `<div class="fl-history">${historyHtml}</div>` : ''}
     </div>`;
   }
 
@@ -2595,7 +2640,7 @@
         const ex = s.exercises.find(e => e.slotId === slotId);
         if(ex){
           const sets = (ex.sets||[]).filter(x => x.weight || x.reps);
-          if(sets.length) return {date: s.date, missed: false, sets};
+          if(sets.length) return {date: s.date, missed: false, sets, variation: ex.variation};
         }
       }
       return {date: weekSessions[0].date, missed: true};
@@ -3448,6 +3493,78 @@
     el.textContent = msg;
     el.className = 'backup-msg ' + (ok ? 'ok' : 'err');
   }
+
+  // ---------- SPREADSHEET EXPORT (one row per logged set, tab-separated) ----------
+  function tsvEscape(v){
+    return String(v == null ? '' : v).replace(/\t/g, ' ').replace(/\r?\n/g, ' ');
+  }
+
+  async function buildSpreadsheetExport(){
+    const sessions = (await getAllSessions()).filter(sessionHasLoggedData); // ascending by date
+    const headers = ['Date','Day','Focus','Exercise','Variation','Set','Weight','Reps','Rest (s)'];
+    const lines = [headers.join('\t')];
+    sessions.forEach(s => {
+      const dayMeta = DAYS.find(d => d.id === s.dayId);
+      const dayLabel = dayMeta ? dayMeta.label : s.dayId;
+      const focus = dayMeta ? dayMeta.type : '';
+      s.exercises.forEach(e => {
+        (e.sets||[]).forEach((set, i) => {
+          if(!(set.weight || set.reps)) return;
+          lines.push([
+            s.date, dayLabel, focus, e.target, e.variation || '', i+1,
+            set.weight || '', set.reps || '', set.rest || ''
+          ].map(tsvEscape).join('\t'));
+        });
+      });
+    });
+    return lines.join('\n');
+  }
+
+  $('exportSheetBtn').addEventListener('click', async () => {
+    $('exportSheetBtn').textContent = 'Gathering…';
+    const tsv = await buildSpreadsheetExport();
+    $('exportSheetBtn').textContent = 'Generate spreadsheet export';
+
+    const out = $('exportSheetResult');
+    const rowCount = tsv.split('\n').length - 1;
+    if(rowCount <= 0){
+      out.innerHTML = `<div class="backup-msg err">No logged sets yet — log a session first.</div>`;
+      return;
+    }
+
+    const filename = `get-it-sets-${todayStr()}.csv`;
+    const blob = new Blob([tsv], {type:'text/tab-separated-values'});
+    const url = URL.createObjectURL(blob);
+
+    out.innerHTML = `
+      <div class="backup-out">
+        <label>${rowCount} set${rowCount===1?'':'s'}</label>
+        <textarea readonly>${tsv.replace(/</g,'&lt;')}</textarea>
+        <div class="backup-actions">
+          <a class="btn" href="${url}" download="${filename}" id="downloadSheetLink">Download file</a>
+          <button class="btn ghost" id="copySheetBtn">Copy text</button>
+        </div>
+        <div class="backup-msg" id="sheetMsg"></div>
+      </div>
+    `;
+    $('copySheetBtn').addEventListener('click', async () => {
+      const ta = out.querySelector('textarea');
+      const showSheetMsg = (msg, ok) => {
+        const el = $('sheetMsg');
+        if(!el) return;
+        el.textContent = msg;
+        el.className = 'backup-msg ' + (ok ? 'ok' : 'err');
+      };
+      try{
+        await navigator.clipboard.writeText(tsv);
+        showSheetMsg('Copied — paste into a spreadsheet.', true);
+      }catch(e){
+        ta.focus(); ta.select();
+        try{ document.execCommand('copy'); showSheetMsg('Copied — paste into a spreadsheet.', true); }
+        catch(e2){ showSheetMsg('Could not copy automatically — select the text above and copy manually.', false); }
+      }
+    });
+  });
 
   $('importFile').addEventListener('change', (e) => {
     const file = e.target.files[0];
