@@ -327,6 +327,27 @@
   .wo-slot .via{margin-left:auto; font-family:var(--font-mono); font-size:10px; color:var(--text-faint);}
 
   /* ---------- Progress ---------- */
+  /* ---------- Full log (big-picture week-by-week) ---------- */
+  .full-log-week{padding:12px 14px;}
+  .full-log-week-title{font-family:var(--font-mono); font-size:11px; color:var(--text-faint); text-transform:uppercase; letter-spacing:0.03em; margin-bottom:8px;}
+  .full-log-day{padding:8px 0; border-top:1px solid var(--line);}
+  .full-log-day:first-child{border-top:none;}
+  .full-log-day-title{font-family:var(--font-mono); font-size:11px; color:var(--text-dim); margin-bottom:5px;}
+  .full-log-ex{display:flex; justify-content:space-between; align-items:baseline; gap:10px; padding:2px 0; font-size:12px;}
+  .full-log-ex-name{color:var(--text); flex:none; max-width:42%;}
+  .full-log-ex-sets{color:var(--text-faint); font-family:var(--font-mono); font-size:11px; text-align:right;}
+
+  /* ---------- Program consistency (missed / stalled slots) ---------- */
+  .ps-row{padding:6px 0; border-bottom:1px solid var(--line);}
+  .wo-day .ps-row:last-child{border-bottom:none;}
+  .ps-top{display:flex; justify-content:space-between; align-items:center; gap:8px;}
+  .ps-name{font-size:12px; color:var(--text-dim);}
+  .ps-meta{font-family:var(--font-mono); font-size:10px; color:var(--text-faint); flex:none;}
+  .ps-badges{display:flex; gap:6px; margin-top:4px;}
+  .ps-badge{font-family:var(--font-mono); font-size:9px; text-transform:uppercase; letter-spacing:0.03em; padding:2px 7px; border-radius:20px;}
+  .ps-badge.miss{background:rgba(194,91,78,0.15); color:var(--danger);}
+  .ps-badge.stall{background:rgba(225,168,87,0.15); color:var(--amber);}
+
   .stat-grid{display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; margin-bottom:14px;}
   .stat{background:var(--surface); border:1px solid var(--line); border-radius:10px; padding:10px; text-align:center;}
   .stat .v{font-family:var(--font-display); font-size:20px; color:var(--steel);}
@@ -537,6 +558,18 @@
     <section id="tab-progress">
       <h2 class="section-title">Overall trends</h2>
       <div id="trendsCard"></div>
+
+      <div class="row" style="margin:22px 0 10px;">
+        <h2 class="section-title" style="margin:0;">Full log</h2>
+      </div>
+      <div id="fullLogCard"></div>
+      <button class="link-btn past-logs-toggle" id="toggleFullLogBtn" style="display:none;"></button>
+
+      <div class="row" style="margin:22px 0 10px;">
+        <h2 class="section-title" style="margin:0;">Program consistency</h2>
+      </div>
+      <div class="hint" style="margin-top:-6px;">Last 8 weeks — how often each planned exercise actually got done, and whether it's still improving where it sits in your program.</div>
+      <div id="consistencyCard"></div>
 
       <div class="row" style="margin:22px 0 10px;">
         <h2 class="section-title" id="muscleVolumeTitle" style="margin:0;">Sets by muscle group — this week</h2>
@@ -1440,11 +1473,29 @@
   }
 
   // Which muscle group a movement name is tagged with, wherever it's
-  // defined (a day's plan or the bank) — used for the weekly sets-per-
-  // muscle-group breakdown. Falls back to 'Other' for anything untagged.
+  // defined (a day's plan or the bank) — used as a fallback when a logged
+  // exercise has no slotId of its own. Falls back to 'Other' for anything untagged.
   function muscleGroupForTarget(target){
     const found = findSlotDefinitionByTarget(target);
     return (found && found.muscleGroup) || 'Other';
+  }
+
+  // The muscle group for one logged exercise, specifically. The same movement
+  // name (e.g. "Row", "Abs") is often defined as a *separate* slot on more
+  // than one day, each with its own muscleGroup — so resolving purely by name
+  // (muscleGroupForTarget) always finds whichever day happens to come first
+  // in DAYS, ignoring edits made to any other day's copy of that slot. This
+  // instead looks up the exact slot the exercise was logged against, via its
+  // slotId within that session's own day plan, so an edit to e.g. Day 3's
+  // "Bicep Curl" is reflected for sets logged on Day 3 even though Day 1 also
+  // has a "Bicep Curl" slot with a different group.
+  function muscleGroupForExercise(session, ex){
+    if(ex.slotId){
+      const plan = state.plans[session.dayId] || [];
+      const slot = plan.find(s => s.id === ex.slotId);
+      if(slot && slot.muscleGroup) return slot.muscleGroup;
+    }
+    return muscleGroupForTarget(ex.target);
   }
 
   function emptySession(dayId, date){
@@ -2449,6 +2500,152 @@
     return m+':'+String(s).padStart(2,'0');
   }
 
+  // ---------- FULL LOG (big-picture, every set/rep, week by week) ----------
+  let fullLogExpanded = false;
+
+  async function renderFullLogCard(){
+    const wrap = $('fullLogCard');
+    const btn = $('toggleFullLogBtn');
+    if(!wrap || !btn) return;
+    const sessions = (await getAllSessions()).filter(sessionHasLoggedData);
+
+    // Walk back 8 weeks (this week + 7 prior), keep only weeks that actually have logged sessions.
+    const weeks = [];
+    for(let off=0; off>-8; off--){
+      const {start, end} = currentWeekRange(off);
+      const weekSessions = sessions.filter(s => s.date >= start && s.date <= end)
+        .sort((a,b) => a.date < b.date ? -1 : 1);
+      if(weekSessions.length) weeks.push({off, start, end, sessions: weekSessions});
+    }
+
+    if(weeks.length === 0){
+      wrap.innerHTML = `<div class="empty">Log a session and your full week-by-week history will show up here.</div>`;
+      btn.style.display = 'none';
+      return;
+    }
+
+    const visible = fullLogExpanded ? weeks : weeks.slice(0,2);
+    wrap.innerHTML = visible.map(fullLogWeekHtml).join('');
+
+    if(weeks.length > 2){
+      btn.style.display = '';
+      btn.textContent = fullLogExpanded ? 'Show fewer weeks' : `Show more weeks (${weeks.length-2})`;
+    } else {
+      btn.style.display = 'none';
+    }
+  }
+  $('toggleFullLogBtn').addEventListener('click', () => {
+    fullLogExpanded = !fullLogExpanded;
+    renderFullLogCard();
+  });
+
+  function fullLogWeekHtml(w){
+    const optsFull = {month:'short', day:'numeric'};
+    const rangeLabel = w.off === 0
+      ? 'This week'
+      : `${new Date(w.start+'T00:00').toLocaleDateString(undefined,optsFull)} – ${new Date(w.end+'T00:00').toLocaleDateString(undefined,optsFull)}`;
+    return `<div class="card full-log-week">
+      <div class="full-log-week-title">${rangeLabel}</div>
+      ${w.sessions.map(fullLogDayHtml).join('')}
+    </div>`;
+  }
+
+  function fullLogDayHtml(s){
+    const dayMeta = DAYS.find(d => d.id === s.dayId);
+    const dayLabel = dayMeta ? `${dayMeta.label} — ${dayMeta.type}` : s.dayId;
+    const exRows = s.exercises.filter(e => e.sets.some(x => x.weight || x.reps)).map(e => {
+      const setsStr = e.sets.filter(x => x.weight || x.reps)
+        .map(x => `${x.weight || '–'}×${x.reps || '–'}${x.side ? ' '+x.side[0].toUpperCase() : ''}`)
+        .join(', ');
+      return `<div class="full-log-ex">
+        <span class="full-log-ex-name">${escapeHtml(e.target)}</span>
+        <span class="full-log-ex-sets">${setsStr}</span>
+      </div>`;
+    }).join('');
+    if(!exRows) return '';
+    return `<div class="full-log-day">
+      <div class="full-log-day-title">${fmtDate(s.date)} · ${escapeHtml(dayLabel)}</div>
+      ${exRows}
+    </div>`;
+  }
+
+  // ---------- PROGRAM CONSISTENCY (missed slots + stalled slots, per program placement) ----------
+  const CONSISTENCY_WEEKS = 8;
+
+  // For one plan slot: across the window, which weeks did the person actually
+  // train that day at all, and of those, which weeks did this specific slot
+  // get logged? Missing a day entirely doesn't count against a slot — only
+  // showing up for the day and then not doing (or not finishing) the exercise does.
+  function slotConsistency(dayId, slotId, sessions, weeksBack){
+    const weeks = [];
+    for(let off=0; off>-weeksBack; off--){
+      const {start, end} = currentWeekRange(off);
+      const daySessions = sessions.filter(s => s.dayId===dayId && s.date>=start && s.date<=end && sessionHasLoggedData(s));
+      if(daySessions.length === 0){ weeks.push({off, trained:false, done:false}); continue; }
+      const done = daySessions.some(s => s.exercises.some(e => e.slotId===slotId && e.sets.some(x=>x.weight||x.reps)));
+      weeks.push({off, trained:true, done});
+    }
+    return weeks;
+  }
+
+  // Whether this slot's top-set weight has actually moved within the window —
+  // scoped to this exact day/slot, not the movement in general, since the same
+  // exercise can stall in one placement and still be progressing elsewhere.
+  function slotTrend(dayId, slotId, sessions, weeksBack){
+    const {start} = currentWeekRange(-(weeksBack-1));
+    const pts = [];
+    sessions.filter(s => s.dayId===dayId && s.date>=start).forEach(s => {
+      const ex = s.exercises.find(e => e.slotId===slotId);
+      if(!ex) return;
+      const best = topSet(ex.sets);
+      if(!best || !(parseFloat(best.weight)>0)) return;
+      pts.push({date:s.date, weight: trueWeight(ex, best.weight)});
+    });
+    pts.sort((a,b) => a.date < b.date ? -1 : 1);
+    if(pts.length < 2) return {points: pts.length, deltaPct: 0};
+    const first = pts[0], latest = pts[pts.length-1];
+    const deltaPct = first.weight ? ((latest.weight-first.weight)/first.weight*100) : 0;
+    return {points: pts.length, deltaPct};
+  }
+
+  async function renderConsistencyCard(){
+    const wrap = $('consistencyCard');
+    if(!wrap) return;
+    const sessions = await getAllSessions();
+
+    const dayBlocks = DAYS.map(d => {
+      const plan = state.plans[d.id] || [];
+      if(!plan.length) return '';
+      const rows = plan.map(slot => {
+        const weeks = slotConsistency(d.id, slot.id, sessions, CONSISTENCY_WEEKS);
+        const trained = weeks.filter(w => w.trained);
+        const done = trained.filter(w => w.done).length;
+        const missed = trained.length - done;
+        const missFlag = trained.length >= 3 && (done/trained.length) < 0.67;
+        const trend = slotTrend(d.id, slot.id, sessions, CONSISTENCY_WEEKS);
+        const stallFlag = trend.points >= 3 && Math.abs(trend.deltaPct) <= 3;
+
+        const badges = [
+          missFlag ? `<span class="ps-badge miss">Missed ${missed}/${trained.length}</span>` : '',
+          stallFlag ? `<span class="ps-badge stall">Stalled</span>` : ''
+        ].filter(Boolean).join('');
+
+        return `<div class="ps-row">
+          <div class="ps-top">
+            <span class="ps-name">${escapeHtml(slot.target)}</span>
+            <span class="ps-meta">${trained.length ? `${done}/${trained.length} weeks` : 'No data yet'}</span>
+          </div>
+          ${badges ? `<div class="ps-badges">${badges}</div>` : ''}
+        </div>`;
+      }).join('');
+      return `<div class="wo-day"><div class="wo-day-title"><span>${d.label} — ${d.type}</span></div>${rows}</div>`;
+    }).join('');
+
+    wrap.innerHTML = dayBlocks.trim()
+      ? dayBlocks
+      : `<div class="empty">Set up a plan and log a few weeks to see consistency here.</div>`;
+  }
+
   async function renderProteinHistory(){
     const wrap = $('proteinHistory');
     if(!wrap) return;
@@ -2502,6 +2699,8 @@
       populateVariationSelect(sel.value, sessions);
     }
     renderTrendsCard(sessions);
+    await renderFullLogCard();
+    await renderConsistencyCard();
     await renderMuscleVolumeCard();
   }
   $('progressExerciseSelect').addEventListener('change', async () => {
@@ -2748,7 +2947,7 @@
     weekSessions.forEach(s => s.exercises.forEach(e => {
       const logged = (e.sets||[]).filter(x => x.weight || x.reps).length;
       if(!logged) return;
-      const group = muscleGroupForTarget(e.target);
+      const group = muscleGroupForExercise(s, e);
       counts[group] = (counts[group]||0) + logged;
     }));
 
