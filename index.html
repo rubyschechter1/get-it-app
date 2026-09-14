@@ -327,15 +327,18 @@
   .wo-slot .via{margin-left:auto; font-family:var(--font-mono); font-size:10px; color:var(--text-faint);}
 
   /* ---------- Progress ---------- */
-  /* ---------- Full log (big-picture week-by-week) ---------- */
-  .full-log-week{padding:12px 14px;}
-  .full-log-week-title{font-family:var(--font-mono); font-size:11px; color:var(--text-faint); text-transform:uppercase; letter-spacing:0.03em; margin-bottom:8px;}
-  .full-log-day{padding:8px 0; border-top:1px solid var(--line);}
-  .full-log-day:first-child{border-top:none;}
-  .full-log-day-title{font-family:var(--font-mono); font-size:11px; color:var(--text-dim); margin-bottom:5px;}
-  .full-log-ex{display:flex; justify-content:space-between; align-items:baseline; gap:10px; padding:2px 0; font-size:12px;}
-  .full-log-ex-name{color:var(--text); flex:none; max-width:42%;}
-  .full-log-ex-sets{color:var(--text-faint); font-family:var(--font-mono); font-size:11px; text-align:right;}
+  /* ---------- Full log (day-split, per-exercise expandable history) ---------- */
+  .fl-slot-toggle{
+    display:flex; width:100%; justify-content:space-between; align-items:center; gap:8px;
+    background:none; border:none; padding:0; text-align:left; font-family:var(--font-body);
+  }
+  .fl-caret{font-size:9px; color:var(--text-faint); margin-left:4px;}
+  .fl-history{margin-top:6px; padding-top:2px;}
+  .fl-hist-row{display:flex; justify-content:space-between; gap:10px; padding:4px 0; font-size:12px; border-top:1px solid var(--line);}
+  .fl-hist-row:first-child{border-top:none;}
+  .fl-hist-date{font-family:var(--font-mono); font-size:10px; color:var(--text-faint); flex:none;}
+  .fl-hist-sets{color:var(--text-dim); font-family:var(--font-mono); font-size:11px; text-align:right;}
+  .fl-hist-row.missed .fl-hist-sets.missed-label{color:var(--danger); font-family:var(--font-body); font-style:italic;}
 
   /* ---------- Program consistency (missed / stalled slots) ---------- */
   .ps-row{padding:6px 0; border-bottom:1px solid var(--line);}
@@ -563,7 +566,6 @@
         <h2 class="section-title" style="margin:0;">Full log</h2>
       </div>
       <div id="fullLogCard"></div>
-      <button class="link-btn past-logs-toggle" id="toggleFullLogBtn" style="display:none;"></button>
 
       <div class="row" style="margin:22px 0 10px;">
         <h2 class="section-title" style="margin:0;">Program consistency</h2>
@@ -2500,73 +2502,104 @@
     return m+':'+String(s).padStart(2,'0');
   }
 
-  // ---------- FULL LOG (big-picture, every set/rep, week by week) ----------
-  let fullLogExpanded = false;
+  // ---------- FULL LOG (day-split layout, per-exercise expandable history) ----------
+  // Which slots are currently expanded, keyed "dayId::slotId" — session-only
+  // (not persisted), reset on reload like any other UI expand/collapse state.
+  let fullLogOpenSlots = new Set();
 
   async function renderFullLogCard(){
     const wrap = $('fullLogCard');
-    const btn = $('toggleFullLogBtn');
-    if(!wrap || !btn) return;
-    const sessions = (await getAllSessions()).filter(sessionHasLoggedData);
+    if(!wrap) return;
+    const sessions = await getAllSessions();
 
-    // Walk back 8 weeks (this week + 7 prior), keep only weeks that actually have logged sessions.
-    const weeks = [];
-    for(let off=0; off>-8; off--){
-      const {start, end} = currentWeekRange(off);
-      const weekSessions = sessions.filter(s => s.date >= start && s.date <= end)
-        .sort((a,b) => a.date < b.date ? -1 : 1);
-      if(weekSessions.length) weeks.push({off, start, end, sessions: weekSessions});
-    }
+    const dayBlocks = DAYS.map(d => {
+      const plan = state.plans[d.id] || [];
+      if(!plan.length) return '';
+      const rows = plan.map(slot => fullLogSlotHtml(d, slot, sessions)).join('');
+      return `<div class="wo-day"><div class="wo-day-title"><span>${d.label} — ${d.type}</span></div>${rows}</div>`;
+    }).join('');
 
-    if(weeks.length === 0){
-      wrap.innerHTML = `<div class="empty">Log a session and your full week-by-week history will show up here.</div>`;
-      btn.style.display = 'none';
-      return;
-    }
+    wrap.innerHTML = dayBlocks.trim()
+      ? dayBlocks
+      : `<div class="empty">Log a session and your full history will show up here.</div>`;
 
-    const visible = fullLogExpanded ? weeks : weeks.slice(0,2);
-    wrap.innerHTML = visible.map(fullLogWeekHtml).join('');
-
-    if(weeks.length > 2){
-      btn.style.display = '';
-      btn.textContent = fullLogExpanded ? 'Show fewer weeks' : `Show more weeks (${weeks.length-2})`;
-    } else {
-      btn.style.display = 'none';
-    }
-  }
-  $('toggleFullLogBtn').addEventListener('click', () => {
-    fullLogExpanded = !fullLogExpanded;
-    renderFullLogCard();
-  });
-
-  function fullLogWeekHtml(w){
-    const optsFull = {month:'short', day:'numeric'};
-    const rangeLabel = w.off === 0
-      ? 'This week'
-      : `${new Date(w.start+'T00:00').toLocaleDateString(undefined,optsFull)} – ${new Date(w.end+'T00:00').toLocaleDateString(undefined,optsFull)}`;
-    return `<div class="card full-log-week">
-      <div class="full-log-week-title">${rangeLabel}</div>
-      ${w.sessions.map(fullLogDayHtml).join('')}
-    </div>`;
+    wrap.querySelectorAll('[data-fl-toggle]').forEach(btn => btn.addEventListener('click', () => {
+      const key = btn.dataset.flToggle;
+      if(fullLogOpenSlots.has(key)) fullLogOpenSlots.delete(key);
+      else fullLogOpenSlots.add(key);
+      renderFullLogCard();
+    }));
   }
 
-  function fullLogDayHtml(s){
-    const dayMeta = DAYS.find(d => d.id === s.dayId);
-    const dayLabel = dayMeta ? `${dayMeta.label} — ${dayMeta.type}` : s.dayId;
-    const exRows = s.exercises.filter(e => e.sets.some(x => x.weight || x.reps)).map(e => {
-      const setsStr = e.sets.filter(x => x.weight || x.reps)
-        .map(x => `${x.weight || '–'}×${x.reps || '–'}${x.side ? ' '+x.side[0].toUpperCase() : ''}`)
-        .join(', ');
-      return `<div class="full-log-ex">
-        <span class="full-log-ex-name">${escapeHtml(e.target)}</span>
-        <span class="full-log-ex-sets">${setsStr}</span>
+  function fullLogSlotHtml(d, slot, sessions){
+    const key = d.id+'::'+slot.id;
+    const rows = fullLogSlotWeeklyRows(d.id, slot.id, sessions);
+    const open = fullLogOpenSlots.has(key);
+    const doneCount = rows.filter(r => !r.missed).length;
+    const missedCount = rows.filter(r => r.missed).length;
+
+    const metaText = rows.length
+      ? `${doneCount} log${doneCount===1?'':'s'}${missedCount ? ` · ${missedCount} missed` : ''}`
+      : 'No data yet';
+
+    const historyHtml = rows.map(r => {
+      if(r.missed){
+        return `<div class="fl-hist-row missed">
+          <span class="fl-hist-date">${fmtDate(r.date)}</span>
+          <span class="fl-hist-sets missed-label">Missed</span>
+        </div>`;
+      }
+      const setsStr = r.sets.map(x => `${x.weight || '–'}×${x.reps || '–'}${x.side ? ' '+x.side[0].toUpperCase() : ''}`).join(', ');
+      return `<div class="fl-hist-row">
+        <span class="fl-hist-date">${fmtDate(r.date)}</span>
+        <span class="fl-hist-sets">${setsStr}</span>
       </div>`;
     }).join('');
-    if(!exRows) return '';
-    return `<div class="full-log-day">
-      <div class="full-log-day-title">${fmtDate(s.date)} · ${escapeHtml(dayLabel)}</div>
-      ${exRows}
+
+    return `<div class="ps-row">
+      <button class="fl-slot-toggle" data-fl-toggle="${key}">
+        <span class="ps-name">${escapeHtml(slot.target)}</span>
+        <span class="ps-meta">${metaText} <span class="fl-caret">${open ? '▲' : '▼'}</span></span>
+      </button>
+      ${open ? `<div class="fl-history">${historyHtml || '<div class="empty" style="margin:6px 0 0;">No logged sets yet.</div>'}</div>` : ''}
     </div>`;
+  }
+
+  // The Sunday–Saturday range containing an arbitrary date, independent of
+  // "today" — used to bucket a slot's history by week regardless of how far
+  // back it goes, so a week where the day was trained but this exercise
+  // wasn't gets its own "missed" row instead of just disappearing.
+  function weekRangeForDate(dateStr){
+    const d = new Date(dateStr+'T00:00');
+    const sunday = new Date(d);
+    sunday.setDate(d.getDate() - d.getDay());
+    const fmt = (x) => `${x.getFullYear()}-${pad(x.getMonth()+1)}-${pad(x.getDate())}`;
+    return {start: fmt(sunday)};
+  }
+
+  // One row per week this day was trained: the logged sets if this slot got
+  // done that week, or a "missed" placeholder (dated to that week's session)
+  // if the day was trained but this exercise wasn't — most recent week first.
+  function fullLogSlotWeeklyRows(dayId, slotId, sessions){
+    const daySessions = sessions.filter(s => s.dayId === dayId && sessionHasLoggedData(s));
+    const weekMap = new Map(); // week-start -> sessions[]
+    daySessions.forEach(s => {
+      const start = weekRangeForDate(s.date).start;
+      if(!weekMap.has(start)) weekMap.set(start, []);
+      weekMap.get(start).push(s);
+    });
+    const weekStarts = Array.from(weekMap.keys()).sort().reverse();
+    return weekStarts.map(start => {
+      const weekSessions = weekMap.get(start).slice().sort((a,b) => a.date < b.date ? -1 : 1);
+      for(const s of weekSessions){
+        const ex = s.exercises.find(e => e.slotId === slotId);
+        if(ex){
+          const sets = (ex.sets||[]).filter(x => x.weight || x.reps);
+          if(sets.length) return {date: s.date, missed: false, sets};
+        }
+      }
+      return {date: weekSessions[0].date, missed: true};
+    });
   }
 
   // ---------- PROGRAM CONSISTENCY (missed slots + stalled slots, per program placement) ----------
