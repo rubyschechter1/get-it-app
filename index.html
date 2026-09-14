@@ -2549,28 +2549,38 @@
   // e.g. all Cable Row history lives in one place instead of being split
   // wherever "Row" happens to appear in the plan. Each group is then assigned
   // a single "home" day: whichever day it was actually logged on most often,
-  // so a variation only ever shows up once in the whole log.
+  // so a variation only ever shows up once in the whole log. Grouping keys
+  // are case-normalized (real logs sometimes have the same variation typed
+  // with different capitalization across sessions), but the displayed label
+  // uses whichever exact casing was actually used most often.
   function fullLogVariationGroups(sessions){
-    const groups = new Map(); // "target::variation" -> {target, variation, entries:[], dayCounts:{}}
+    const groups = new Map(); // "target::normalized-variation" -> {target, entries:[], dayCounts:{}, labelCounts:{}}
     sessions.forEach(s => {
       s.exercises.forEach(e => {
         if(!e.variation) return;
         const sets = (e.sets||[]).filter(x => x.weight || x.reps);
         if(!sets.length) return;
-        const key = e.target+'::'+e.variation;
-        if(!groups.has(key)) groups.set(key, {target: e.target, variation: e.variation, entries: [], dayCounts: {}});
+        const norm = e.variation.trim().toLowerCase();
+        const key = e.target+'::'+norm;
+        if(!groups.has(key)) groups.set(key, {target: e.target, entries: [], dayCounts: {}, labelCounts: {}});
         const g = groups.get(key);
         g.entries.push({date: s.date, dayId: s.dayId, sets});
         g.dayCounts[s.dayId] = (g.dayCounts[s.dayId]||0) + 1;
+        g.labelCounts[e.variation] = (g.labelCounts[e.variation]||0) + 1;
       });
     });
     groups.forEach(g => {
-      let homeDay = null, best = -1;
+      let homeDay = null, bestDay = -1;
       DAYS.forEach(d => { // walk in DAYS order so ties consistently favor the earlier day
         const c = g.dayCounts[d.id] || 0;
-        if(c > best){ best = c; homeDay = d.id; }
+        if(c > bestDay){ bestDay = c; homeDay = d.id; }
       });
       g.homeDay = homeDay;
+      let bestLabel = null, bestLabelCount = -1;
+      Object.keys(g.labelCounts).forEach(l => {
+        if(g.labelCounts[l] > bestLabelCount){ bestLabelCount = g.labelCounts[l]; bestLabel = l; }
+      });
+      g.variation = bestLabel;
       g.entries.sort((a,b) => a.date < b.date ? 1 : -1); // most recent first
     });
     return Array.from(groups.values());
@@ -2593,26 +2603,63 @@
   }
 
   function fullLogSlotHtml(d, slot, sessions, variationGroups){
-    // "Missed" weeks stay tied to this exact day+slot — whether the day was
-    // trained but nothing at all got logged for it that week, regardless of
-    // variation — since that's a per-day-placement question, unlike the
-    // variation history itself which is now consolidated globally below.
-    const missedRows = fullLogSlotWeeklyRows(d.id, slot.id, sessions).filter(r => r.missed);
-    const groups = variationGroups.filter(g => g.target === slot.target && g.homeDay === d.id);
+    const weeklyRows = fullLogSlotWeeklyRows(d.id, slot.id, sessions);
+    const missedRows = weeklyRows.filter(r => r.missed);
+    const missedHtml = missedRows.length ? fullLogMissedRowHtml(d, slot, missedRows) : '';
 
+    // Only slots that actually offer more than one variation to swap between
+    // (this slot's OWN variations list, not just any slot sharing the same
+    // exercise name elsewhere in the plan) get cross-day consolidation. Two
+    // different days can each have a fixed, single-variation slot that just
+    // happens to share a name — e.g. Bicep Curl on Day 1 and Day 3 — and
+    // those are separate programming, not a variation to resolve, so each
+    // day keeps its own independent history rather than one absorbing the
+    // other's data.
+    const ambiguous = (slot.variations || []).length > 1;
+
+    if(!ambiguous){
+      const loggedRows = weeklyRows.filter(r => !r.missed);
+      if(loggedRows.length === 0 && missedRows.length === 0){
+        return `<div class="ps-row"><div class="ps-top"><span class="ps-name">${escapeHtml(slot.target)}</span><span class="ps-meta">No data yet</span></div></div>`;
+      }
+      return (loggedRows.length ? fullLogSimpleSlotRowHtml(d, slot, loggedRows) : '') + missedHtml;
+    }
+
+    const groups = variationGroups.filter(g => g.target === slot.target && g.homeDay === d.id);
     if(groups.length === 0 && missedRows.length === 0){
       return `<div class="ps-row"><div class="ps-top"><span class="ps-name">${escapeHtml(slot.target)}</span><span class="ps-meta">No data yet</span></div></div>`;
     }
 
-    return groups.map(g => fullLogVariationRowHtml(d, slot, g)).join('')
-      + (missedRows.length ? fullLogMissedRowHtml(d, slot, missedRows) : '');
+    return groups.map(g => fullLogVariationRowHtml(d, slot, g)).join('') + missedHtml;
+  }
+
+  // For a non-ambiguous slot (one fixed variation): a single row for this
+  // exact day+slot with its own full history — no cross-day merging, no
+  // variation badge, since there's no variation choice to distinguish.
+  function fullLogSimpleSlotRowHtml(d, slot, rows){
+    const key = d.id+'::'+slot.id+'::__simple';
+    const open = fullLogOpenSlots.has(key);
+    const historyHtml = rows.map(r => {
+      const setsStr = r.sets.map(x => `${x.weight || '–'}×${x.reps || '–'}${x.side ? ' '+x.side[0].toUpperCase() : ''}`).join(', ');
+      return `<div class="fl-hist-row">
+        <span class="fl-hist-date">${fmtDate(r.date)}</span>
+        <span class="fl-hist-sets">${setsStr}</span>
+      </div>`;
+    }).join('');
+    return `<div class="ps-row">
+      <button class="fl-slot-toggle" data-fl-toggle="${key}">
+        <span class="ps-name">${escapeHtml(slot.target)}</span>
+        <span class="ps-meta">${rows.length} log${rows.length===1?'':'s'} <span class="fl-caret">${open ? '▲' : '▼'}</span></span>
+      </button>
+      ${open ? `<div class="fl-history">${historyHtml}</div>` : ''}
+    </div>`;
   }
 
   function fullLogVariationRowHtml(d, slot, group){
     const key = d.id+'::'+slot.id+'::'+group.variation;
     const open = fullLogOpenSlots.has(key);
     const entries = dedupeEntriesByWeek(group.entries);
-    const showBadge = group.variation && group.variation !== slot.target;
+    const showBadge = group.variation && group.variation.toLowerCase() !== slot.target.toLowerCase();
     const historyHtml = entries.map(e => {
       const setsStr = e.sets.map(x => `${x.weight || '–'}×${x.reps || '–'}${x.side ? ' '+x.side[0].toUpperCase() : ''}`).join(', ');
       return `<div class="fl-hist-row">
