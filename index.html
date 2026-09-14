@@ -2660,22 +2660,15 @@
     rows.sort((a,b) => a.date < b.date ? 1 : -1);
 
     if(rows.length === 0){
-      wrap.innerHTML = `<div class="empty">Log some protein to see your history here.</div>`;
+      wrap.innerHTML = `<div class="empty">Log some protein to see your average here.</div>`;
       return;
     }
     const avgAll = Math.round(rows.reduce((a,r) => a+r.total, 0) / rows.length);
-    let html = `<div class="stat-grid">
+    wrap.innerHTML = `<div class="stat-grid">
       <div class="stat"><div class="v">${rows[0].total}</div><div class="l">Most recent</div></div>
       <div class="stat"><div class="v">${avgAll}</div><div class="l">Daily avg</div></div>
       <div class="stat"><div class="v">${rows.length}</div><div class="l">Days logged</div></div>
     </div>`;
-    html += rows.slice(0,14).map(r => `
-      <div class="hist-row">
-        <span class="d">${fmtDate(r.date)}</span>
-        <span class="best">${r.total}g</span>
-      </div>
-    `).join('');
-    wrap.innerHTML = html;
   }
 
   async function renderProgressExerciseOptions(){
@@ -2851,6 +2844,18 @@
     content.innerHTML = html;
   }
 
+  // The order movements appear across the week's program: Day 1's slots in
+  // plan order, then Day 2's, etc. — so trend lists read in the same order
+  // you actually do them, not shuffled by how much progress each one made.
+  function programOrder(){
+    const order = [];
+    const seen = new Set();
+    DAYS.forEach(d => (state.plans[d.id]||[]).forEach(s => {
+      if(!seen.has(s.target)){ seen.add(s.target); order.push(s.target); }
+    }));
+    return order;
+  }
+
   // Overall "am I making progress" summary across every movement, comparing
   // the average of your earliest logs to your most recent logs.
   function renderTrendsCard(sessions){
@@ -2890,7 +2895,18 @@
       const deltaPct = first.weight ? ((latest.weight-first.weight)/first.weight*100) : 0;
       return {target, first, latest, deltaPct, count:arr.length};
     }).filter(Boolean);
-    rows.sort((a,b) => b.deltaPct - a.deltaPct);
+
+    // Order by where each movement falls in the weekly program (Day 1 top to
+    // bottom, then Day 2, ...); anything not in any current plan (renamed or
+    // removed slots, ad-hoc adds) sorts alphabetically after everything else.
+    const order = programOrder();
+    rows.sort((a,b) => {
+      const ia = order.indexOf(a.target), ib = order.indexOf(b.target);
+      if(ia === -1 && ib === -1) return a.target.localeCompare(b.target);
+      if(ia === -1) return 1;
+      if(ib === -1) return -1;
+      return ia - ib;
+    });
 
     const upCount = rows.filter(r => r.deltaPct > 3).length;
     const downCount = rows.filter(r => r.deltaPct < -3).length;
