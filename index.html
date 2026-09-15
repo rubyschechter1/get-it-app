@@ -49,7 +49,14 @@
     font-size:26px; margin:0; text-transform:uppercase;
   }
   .brand h1 span{color:var(--steel);}
+  .brand-right{display:flex; flex-direction:column; align-items:flex-end; gap:5px;}
   .date-today{font-family:var(--font-mono); font-size:11px; color:var(--text-faint); text-align:right;}
+  .unit-toggle{
+    font-family:var(--font-mono); font-size:10px; text-transform:uppercase; letter-spacing:0.04em;
+    color:var(--text-dim); background:var(--surface); border:1px solid var(--line); border-radius:20px;
+    padding:2px 10px; flex:none;
+  }
+  .unit-toggle:active{background:var(--steel-dim); border-color:var(--steel); color:#fff;}
   .phase-pill{
     display:inline-flex; align-items:center; gap:6px; margin-top:8px;
     font-family:var(--font-mono); font-size:11px; color:var(--text-dim);
@@ -240,6 +247,8 @@
   .exercise-head .variation-sub{font-family:var(--font-mono); font-size:11px; color:var(--text-faint);}
   .prev-line{padding:0 14px 8px; font-family:var(--font-mono); font-size:11px; color:var(--text-faint);}
   .prev-line strong{color:var(--text-dim); font-weight:500;}
+  .best-line{padding:0 14px 8px; font-family:var(--font-mono); font-size:11px; color:var(--text-faint);}
+  .best-line strong{color:var(--steel); font-weight:600;}
   .exercise-head-actions{display:flex; align-items:center; gap:6px; flex-wrap:wrap; justify-content:flex-end;}
   .ex-save-btn{
     display:flex; align-items:center; justify-content:center; gap:6px; width:100%;
@@ -487,7 +496,10 @@
   <header>
     <div class="brand">
       <h1>GET <span>IT</span></h1>
-      <div class="date-today" id="headerDate">—</div>
+      <div class="brand-right">
+        <div class="date-today" id="headerDate">—</div>
+        <button class="unit-toggle" id="unitToggleBtn" title="Switch weight unit">LB</button>
+      </div>
     </div>
     <div class="phase-pill" id="phasePill"><span class="phase-dot" id="phasePillDot"></span><span id="phasePillText">No cycle data yet</span></div>
     <div class="cal-toggle" id="calToggle">
@@ -834,6 +846,7 @@
     movementBank: [],       // movements available anywhere, not tied to a specific day
     session: null,          // current in-progress session object
     cycleSettings: {avgCycleLength:28, periodLength:5},
+    weightUnit: 'lb',       // 'lb' or 'kg' — display/input preference; storage always stays in lb
     periodRanges: [],       // array of {start, end|null}, sorted by start
     cycleEntries: {},       // date -> {phase, energy, notes}
     selectedEnergy: null,
@@ -1134,6 +1147,8 @@
     $('cycleDate').max = todayStr();
 
     state.cycleSettings = await getJSON('cycle-settings', {avgCycleLength:28, periodLength:5});
+    state.weightUnit = await getJSON('weight-unit', 'lb');
+    updateUnitToggleBtn();
     state.periodRanges = await loadPeriodRanges();
 
     const storedDayLabels = await getJSON('day-labels', null);
@@ -1261,6 +1276,22 @@
     await renderWeekStrip();
     await renderWeekOverview();
   });
+  // ---------- weight unit toggle ----------
+  function updateUnitToggleBtn(){
+    const btn = $('unitToggleBtn');
+    if(btn) btn.textContent = unitLabel().toUpperCase();
+  }
+  async function refreshForUnitChange(){
+    updateUnitToggleBtn();
+    if(state.session) renderExerciseList();
+    await renderProgressExerciseOptions();
+  }
+  $('unitToggleBtn').addEventListener('click', async () => {
+    state.weightUnit = state.weightUnit === 'kg' ? 'lb' : 'kg';
+    await setJSON('weight-unit', state.weightUnit);
+    await refreshForUnitChange();
+  });
+
   $('nextWeekBtn').addEventListener('click', async () => {
     state.weekOffset += 1;
     await renderWeekStrip();
@@ -1412,6 +1443,8 @@
     const varMap = {};
     const perfByTarget = {};
     const perfByVariation = {};
+    const bestByTarget = {};
+    const bestByVariation = {};
     sessions.forEach(s => {
       (s.exercises||[]).forEach(e => {
         if(!e.target) return;
@@ -1427,12 +1460,33 @@
           };
           perfByTarget[e.target] = entry;
           if(e.variation) perfByVariation[e.variation] = entry;
+
+          // Track the single heaviest set ever logged, raw weight as entered
+          // (not the barbell/unilateral-adjusted total) — so the log screen
+          // can show "Best: X" alongside the most recent session even when
+          // the most recent session was a lighter, fatigued day.
+          e.sets.forEach(set => {
+            const w = parseFloat(set.weight) || 0;
+            if(w <= 0) return;
+            const rec = {weight: set.weight, reps: set.reps, date: s.date};
+            if(!bestByTarget[e.target] || w > (parseFloat(bestByTarget[e.target].weight)||0)) bestByTarget[e.target] = rec;
+            if(e.variation && (!bestByVariation[e.variation] || w > (parseFloat(bestByVariation[e.variation].weight)||0))) bestByVariation[e.variation] = rec;
+          });
         }
       });
     });
     state.lastVariationBySlot = varMap;
     state.lastPerformanceBySlot = perfByTarget;
     state.lastPerformanceByVariation = perfByVariation;
+    state.bestPerformanceBySlot = bestByTarget;
+    state.bestPerformanceByVariation = bestByVariation;
+  }
+
+  // Heaviest set ever logged for this exercise — prefers the exact variation
+  // selected, falling back to any variation of the movement, same preference
+  // order as getPrevPerformance.
+  function getBestPerformance(ex){
+    return state.bestPerformanceByVariation[ex.variation] || state.bestPerformanceBySlot[ex.target] || null;
   }
 
   // Most recent prior logged performance for this exercise, excluding the
@@ -1640,12 +1694,31 @@
 
   function formatPrevLine(ex){
     const perf = getPrevPerformance(ex);
-    if(!perf) return '';
-    const logged = perf.sets.filter(s => s.weight || s.reps);
-    if(!logged.length) return '';
-    const summary = logged.map(s => `${s.weight||'–'}×${s.reps||'–'}${s.rest?' · '+fmtRest(s.rest)+' rest':''}`).join(', ');
-    const varyNote = perf.variation !== ex.variation ? ` <span style="color:var(--text-faint);">(${perf.variation})</span>` : '';
-    return `<div class="prev-line">Last ${fmtDate(perf.date)}${varyNote}: <strong>${summary}</strong></div>`;
+    let lastHtml = '';
+    let lastTopWeight = -1;
+    if(perf){
+      const logged = perf.sets.filter(s => s.weight || s.reps);
+      if(logged.length){
+        const summary = logged.map(s => `${s.weight?displayWeight(s.weight):'–'}×${s.reps||'–'}${s.rest?' · '+fmtRest(s.rest)+' rest':''}`).join(', ');
+        const varyNote = perf.variation !== ex.variation ? ` <span style="color:var(--text-faint);">(${perf.variation})</span>` : '';
+        lastHtml = `<div class="prev-line">Last ${fmtDate(perf.date)}${varyNote}: <strong>${summary}</strong></div>`;
+        const top = topSet(logged);
+        if(top) lastTopWeight = parseFloat(top.weight) || -1;
+      }
+    }
+
+    // Only worth a second line when it's actually a bigger number than what's
+    // already shown above — otherwise last session already was the best and
+    // repeating it here is just noise. This is exactly for the fatigued-week
+    // case: last time was lighter, but a heavier day is still visible.
+    // Comparison stays in raw (lb) storage units regardless of display unit.
+    let bestHtml = '';
+    const best = getBestPerformance(ex);
+    if(best && (parseFloat(best.weight)||0) > lastTopWeight){
+      bestHtml = `<div class="best-line">Best: <strong>${displayWeight(best.weight)}×${best.reps||'–'}</strong> <span style="color:var(--text-faint);">(${fmtDate(best.date)})</span></div>`;
+    }
+
+    return lastHtml + bestHtml;
   }
 
   // ---------- SESSION TIMER ----------
@@ -1738,8 +1811,8 @@
         ${formatPrevLine(ex)}
         ${ex.barbell ? `<div class="bar-weight-row">
           <span>Bar weight</span>
-          <input type="number" inputmode="decimal" value="${ex.barWeight}" data-barweight="${exIdx}">
-          <span>lb · total = per side ×2 + bar</span>
+          <input type="number" inputmode="decimal" value="${displayWeight(ex.barWeight)}" data-barweight="${exIdx}">
+          <span>${unitLabel()} · total = per side ×2 + bar</span>
         </div>` : ''}
         ${variations && variations.length>1 ? `<div class="variation-row" data-varrow="${exIdx}"></div>` : ''}
         <div class="set-labels"><div></div><div>Weight</div><div>Reps</div><div>Rest</div><div></div><div></div></div>
@@ -1800,7 +1873,7 @@
     }));
     wrap.querySelectorAll('[data-barweight]').forEach(inp => inp.addEventListener('input', () => {
       const i = +inp.dataset.barweight;
-      state.session.exercises[i].barWeight = parseFloat(inp.value) || 0;
+      state.session.exercises[i].barWeight = parseFloat(storageWeight(inp.value)) || 0;
       renderSets(i);
       scheduleAutosave();
     }));
@@ -1832,14 +1905,18 @@
     }));
   }
 
-  function weightTotalLabel(ex, weightVal){
+  function weightTotalLabel(ex, weightValDisplay){
+    // weightValDisplay is already in the CURRENT display unit (what's shown
+    // in the input) — bar weight is stored canonically in lb, so it needs
+    // converting to the same unit before adding.
     if(ex.barbell){
-      if(!weightVal) return '2×+bar';
-      return '= '+(parseFloat(weightVal)*2 + (parseFloat(ex.barWeight)||0));
+      if(!weightValDisplay) return '2×+bar';
+      const barDisplay = parseFloat(displayWeight(ex.barWeight)) || 0;
+      return '= '+round1(parseFloat(weightValDisplay)*2 + barDisplay);
     }
     if(ex.unilateral){
-      if(!weightVal) return '×2';
-      return '×2 = '+(parseFloat(weightVal)*2);
+      if(!weightValDisplay) return '×2';
+      return '×2 = '+round1(parseFloat(weightValDisplay)*2);
     }
     return '';
   }
@@ -1860,11 +1937,12 @@
       const sideLabel = ex.singleArm
         ? `<button class="side-chip side-${s.side||'L'}" data-side="${sIdx}">${s.side||'L'}</button>`
         : `<div class="set-num">${sIdx+1}</div>`;
+      const weightDisplay = displayWeight(s.weight);
       row.innerHTML = `
         ${sideLabel}
         <div class="weight-cell">
-          <input type="number" inputmode="decimal" value="${s.weight}" placeholder="${prev&&prev.weight?prev.weight:'lb'}" data-field="weight">
-          ${showTotal ? `<div class="dbl" data-dbl="${sIdx}">${weightTotalLabel(ex, s.weight)}</div>` : ''}
+          <input type="number" inputmode="decimal" value="${weightDisplay}" placeholder="${prev&&prev.weight?displayWeight(prev.weight):unitLabel()}" data-field="weight">
+          ${showTotal ? `<div class="dbl" data-dbl="${sIdx}">${weightTotalLabel(ex, weightDisplay)}</div>` : ''}
         </div>
         <input type="number" inputmode="numeric" value="${s.reps}" placeholder="${prev&&prev.reps?prev.reps:'0'}" data-field="reps">
         <input type="number" inputmode="numeric" value="${s.rest}" placeholder="${prev&&prev.rest?prev.rest:'sec'}" min="0" data-field="rest">
@@ -1873,7 +1951,7 @@
       `;
       row.querySelectorAll('input').forEach(inp => {
         inp.addEventListener('input', () => {
-          sets[sIdx][inp.dataset.field] = inp.value;
+          sets[sIdx][inp.dataset.field] = inp.dataset.field === 'weight' ? storageWeight(inp.value) : inp.value;
           if(inp.dataset.field === 'weight' && showTotal){
             const dbl = row.querySelector(`[data-dbl="${sIdx}"]`);
             if(dbl) dbl.textContent = weightTotalLabel(ex, inp.value);
@@ -2061,7 +2139,7 @@
         <div class="plan-edit-foot" style="margin-top:8px;">
           <label><input type="checkbox" data-bar="${sIdx}" ${s.barbell?'checked':''}> Barbell (weight per side + bar)</label>
           ${s.barbell ? `<span style="display:flex; align-items:center; gap:6px; font-family:var(--font-mono); font-size:11px; color:var(--text-faint);">
-            <input type="number" data-barw="${sIdx}" value="${s.barWeight||45}" style="width:56px; padding:5px 6px; text-align:center;"> lb bar
+            <input type="number" data-barw="${sIdx}" value="${displayWeight(s.barWeight||45)}" style="width:56px; padding:5px 6px; text-align:center;"> ${unitLabel()} bar
           </span>` : ''}
         </div>
         <div class="plan-edit-foot" style="margin-top:8px;">
@@ -2170,7 +2248,7 @@
       renderPlanEditor();
     }));
     wrap.querySelectorAll('[data-barw]').forEach(inp => inp.addEventListener('input', () => {
-      plan[+inp.dataset.barw].barWeight = parseFloat(inp.value) || 0;
+      plan[+inp.dataset.barw].barWeight = parseFloat(storageWeight(inp.value)) || 0;
     }));
     wrap.querySelectorAll('[data-singlearm]').forEach(cb => cb.addEventListener('change', () => {
       plan[+cb.dataset.singlearm].singleArm = cb.checked;
@@ -2302,7 +2380,7 @@
         <div class="plan-edit-foot" style="margin-top:8px;">
           <label><input type="checkbox" data-bar="${sIdx}" ${s.barbell?'checked':''}> Barbell (weight per side + bar)</label>
           ${s.barbell ? `<span style="display:flex; align-items:center; gap:6px; font-family:var(--font-mono); font-size:11px; color:var(--text-faint);">
-            <input type="number" data-barw="${sIdx}" value="${s.barWeight||45}" style="width:56px; padding:5px 6px; text-align:center;"> lb bar
+            <input type="number" data-barw="${sIdx}" value="${displayWeight(s.barWeight||45)}" style="width:56px; padding:5px 6px; text-align:center;"> ${unitLabel()} bar
           </span>` : ''}
         </div>
         <div class="plan-edit-foot" style="margin-top:8px;">
@@ -2370,7 +2448,7 @@
       await persistBank();
     }));
     wrap.querySelectorAll('[data-barw]').forEach(inp => inp.addEventListener('input', async () => {
-      bank[+inp.dataset.barw].barWeight = parseFloat(inp.value) || 0;
+      bank[+inp.dataset.barw].barWeight = parseFloat(storageWeight(inp.value)) || 0;
       await persistBank();
     }));
     wrap.querySelectorAll('[data-singlearm]').forEach(cb => cb.addEventListener('change', async () => {
@@ -2506,6 +2584,38 @@
 
   const avg = (arr) => arr.length ? arr.reduce((a,b)=>a+b,0)/arr.length : null;
   const round1 = (n) => Math.round(n*10)/10;
+
+  // ---------- WEIGHT UNIT (lb/kg display toggle) ----------
+  // All weights are stored in lb internally, regardless of display unit —
+  // this keeps historical data (and cross-device backups) unambiguous. Only
+  // the display and input layers convert; nothing gets written to storage
+  // in kg.
+  const KG_PER_LB = 0.45359237;
+  const lbToKg = (lb) => lb * KG_PER_LB;
+  const kgToLb = (kg) => kg / KG_PER_LB;
+  const unitLabel = () => state.weightUnit === 'kg' ? 'kg' : 'lb';
+
+  // Converts a raw stored (lb) weight to the current display unit, rounded
+  // to a sane number of decimals for on-screen display. Returns '' for
+  // empty/invalid input so it plays nicely with placeholders and blank cells.
+  function displayWeight(rawLb){
+    const n = parseFloat(rawLb);
+    if(!isFinite(n) || rawLb === '' || rawLb == null) return '';
+    const converted = state.weightUnit === 'kg' ? lbToKg(n) : n;
+    const rounded = Math.round(converted * 10) / 10;
+    return String(rounded);
+  }
+
+  // Converts a value the person just typed (in the current display unit)
+  // back to lb for storage. Returns '' unchanged for blank input so clearing
+  // a field still clears it.
+  function storageWeight(displayVal){
+    if(displayVal === '' || displayVal == null) return displayVal;
+    const n = parseFloat(displayVal);
+    if(!isFinite(n)) return displayVal;
+    const lb = state.weightUnit === 'kg' ? kgToLb(n) : n;
+    return String(Math.round(lb * 100) / 100);
+  }
   function fmtRest(sec){
     sec = parseInt(sec,10);
     if(!sec) return '';
@@ -2640,7 +2750,7 @@
     const key = d.id+'::'+slot.id+'::__simple';
     const open = fullLogOpenSlots.has(key);
     const historyHtml = rows.map(r => {
-      const setsStr = r.sets.map(x => `${x.weight || '–'}×${x.reps || '–'}${x.side ? ' '+x.side[0].toUpperCase() : ''}`).join(', ');
+      const setsStr = r.sets.map(x => `${x.weight?displayWeight(x.weight):'–'}×${x.reps || '–'}${x.side ? ' '+x.side[0].toUpperCase() : ''}`).join(', ');
       return `<div class="fl-hist-row">
         <span class="fl-hist-date">${fmtDate(r.date)}</span>
         <span class="fl-hist-sets">${setsStr}</span>
@@ -2661,7 +2771,7 @@
     const entries = dedupeEntriesByWeek(group.entries);
     const showBadge = group.variation && group.variation.toLowerCase() !== slot.target.toLowerCase();
     const historyHtml = entries.map(e => {
-      const setsStr = e.sets.map(x => `${x.weight || '–'}×${x.reps || '–'}${x.side ? ' '+x.side[0].toUpperCase() : ''}`).join(', ');
+      const setsStr = e.sets.map(x => `${x.weight?displayWeight(x.weight):'–'}×${x.reps || '–'}${x.side ? ' '+x.side[0].toUpperCase() : ''}`).join(', ');
       return `<div class="fl-hist-row">
         <span class="fl-hist-date">${fmtDate(e.date)}</span>
         <span class="fl-hist-sets">${setsStr}</span>
@@ -2932,11 +3042,12 @@
     const minW = Math.min(...weights);
     const latest = rows[rows.length-1];
     const first = rows[0];
-    const delta = round1(latest.weight - first.weight);
+    const deltaConverted = state.weightUnit === 'kg' ? lbToKg(latest.weight - first.weight) : (latest.weight - first.weight);
+    const delta = round1(deltaConverted);
 
     let html = `<div class="stat-grid">
-      <div class="stat"><div class="v">${latest.weight||'–'}</div><div class="l">Last top set</div></div>
-      <div class="stat"><div class="v">${maxW||'–'}</div><div class="l">Best ever</div></div>
+      <div class="stat"><div class="v">${latest.weight?displayWeight(latest.weight):'–'}</div><div class="l">Last top set</div></div>
+      <div class="stat"><div class="v">${maxW?displayWeight(maxW):'–'}</div><div class="l">Best ever</div></div>
       <div class="stat"><div class="v">${delta>=0?'+':''}${delta}</div><div class="l">Since first log</div></div>
     </div>`;
 
@@ -2975,11 +3086,11 @@
       html += `<h2 class="section-title" style="margin-top:18px;">By cycle phase</h2><div class="card">`;
       html += phasesWithData.map(p => {
         const g = phaseGroups[p];
-        const w = round1(avg(g.weights));
+        const w = displayWeight(avg(g.weights));
         const restAvg = g.rests.length ? Math.round(avg(g.rests)) : null;
         return `<div class="hist-row">
           <span class="phase-tag ${p}">${PHASE_LABEL[p]}</span>
-          <span class="best">${w} lb avg${restAvg!==null?` · ${fmtRest(restAvg)} rest`:''}</span>
+          <span class="best">${w} ${unitLabel()} avg${restAvg!==null?` · ${fmtRest(restAvg)} rest`:''}</span>
           <span class="d">${g.weights.length} log${g.weights.length===1?'':'s'}</span>
         </div>`;
       }).join('');
@@ -3090,7 +3201,7 @@
         return `<div class="hist-row">
           <span class="best" style="color:var(--text);">${r.target}</span>
           <span class="best" style="color:${color};">${arrow} ${pct}</span>
-          <span class="d">${round1(r.first.weight)}×${r.first.reps||'–'} → ${round1(r.latest.weight)}×${r.latest.reps||'–'} lb <span style="color:var(--text-faint);">(${r.count} log${r.count===1?'':'s'})</span></span>
+          <span class="d">${displayWeight(r.first.weight)}×${r.first.reps||'–'} → ${displayWeight(r.latest.weight)}×${r.latest.reps||'–'} ${unitLabel()} <span style="color:var(--text-faint);">(${r.count} log${r.count===1?'':'s'})</span></span>
         </div>`;
       }).join('') + `</div>`;
     }
@@ -3583,7 +3694,7 @@
 
   async function buildSpreadsheetExport(){
     const sessions = (await getAllSessions()).filter(sessionHasLoggedData); // ascending by date
-    const headers = ['Date','Day','Focus','Exercise','Variation','Set','Weight','Reps','Rest (s)'];
+    const headers = ['Date','Day','Focus','Exercise','Variation','Set',`Weight (${unitLabel()})`,'Reps','Rest (s)'];
     const lines = [headers.join('\t')];
     sessions.forEach(s => {
       const dayMeta = DAYS.find(d => d.id === s.dayId);
@@ -3594,7 +3705,7 @@
           if(!(set.weight || set.reps)) return;
           lines.push([
             s.date, dayLabel, focus, e.target, e.variation || '', i+1,
-            set.weight || '', set.reps || '', set.rest || ''
+            set.weight ? displayWeight(set.weight) : '', set.reps || '', set.rest || ''
           ].map(tsvEscape).join('\t'));
         });
       });
@@ -3807,6 +3918,2595 @@
     renderCycleOverviewCard();
     renderCyclePerformanceCard();
   });
+
+  // ---------- PREVIEW SEED DATA ----------
+  // Ruby's real exported backup, pre-loaded into this preview build so the
+  // Progress-tab features (Full Log, Program Consistency, trends, etc.) can
+  // be checked directly against real data instead of synthetic test data.
+  // Only seeds once — if this device already has its own data, it's left
+  // alone. Not part of the deployed app; strip this block out before
+  // pushing to GitHub Pages.
+  const PREVIEW_SEED = {
+  "app": "getit",
+  "version": 7,
+  "exportedAt": "2026-09-14T15:15:44.088Z",
+  "plans": {
+    "d1": [
+      {
+        "target": "RDL",
+        "variations": [
+          "RDL"
+        ],
+        "unilateral": false,
+        "barbell": true,
+        "barWeight": 45,
+        "singleArm": false,
+        "id": "d1-rdl",
+        "muscleGroup": "Other"
+      },
+      {
+        "target": "Walking Lunge",
+        "variations": [
+          "Walking Lunges"
+        ],
+        "unilateral": true,
+        "barbell": false,
+        "barWeight": null,
+        "singleArm": false,
+        "id": "d1-walking-lunge",
+        "muscleGroup": "Other"
+      },
+      {
+        "target": "Hip Thrust",
+        "variations": [
+          "Hip Thrust"
+        ],
+        "unilateral": false,
+        "barbell": true,
+        "barWeight": 45,
+        "singleArm": false,
+        "id": "d1-hip-thrust",
+        "muscleGroup": "Other"
+      },
+      {
+        "target": "Row",
+        "variations": [
+          "Cable Row",
+          "Dumbbell Row"
+        ],
+        "unilateral": false,
+        "barbell": false,
+        "barWeight": null,
+        "singleArm": false,
+        "id": "d1-row",
+        "muscleGroup": "Other"
+      },
+      {
+        "target": "Chest Press",
+        "variations": [
+          "Flat Dumbbell Chest Press"
+        ],
+        "unilateral": false,
+        "barbell": false,
+        "barWeight": null,
+        "singleArm": false,
+        "id": "d1-chest-press",
+        "muscleGroup": "Other"
+      },
+      {
+        "target": "Bicep Curl",
+        "variations": [
+          "Bicep Curl"
+        ],
+        "unilateral": false,
+        "barbell": false,
+        "barWeight": null,
+        "singleArm": false,
+        "id": "d1-bicep-curl",
+        "muscleGroup": "Other"
+      },
+      {
+        "target": "Abs",
+        "variations": [
+          "Horizontal Cable Rotation",
+          "Kneeling Wood Chopper",
+          "Weighted Dead Bug"
+        ],
+        "unilateral": false,
+        "barbell": false,
+        "barWeight": null,
+        "singleArm": false,
+        "id": "d1-abs",
+        "muscleGroup": "Other"
+      }
+    ],
+    "d2": [
+      {
+        "target": "Bulgarian Split Squat",
+        "variations": [
+          "Bulgarian Split Squat"
+        ],
+        "unilateral": true,
+        "barbell": false,
+        "barWeight": null,
+        "singleArm": false,
+        "id": "d2-bulgarian-split-squat",
+        "muscleGroup": "Other"
+      },
+      {
+        "target": "Deadlift",
+        "variations": [
+          "Deadlift"
+        ],
+        "unilateral": false,
+        "barbell": true,
+        "barWeight": 45,
+        "singleArm": false,
+        "id": "d2-deadlift",
+        "muscleGroup": "Other"
+      },
+      {
+        "target": "Row",
+        "variations": [
+          "Dumbbell Row",
+          "Cable Row"
+        ],
+        "unilateral": false,
+        "barbell": false,
+        "barWeight": null,
+        "singleArm": false,
+        "id": "d2-row",
+        "muscleGroup": "Other"
+      },
+      {
+        "target": "Abductor Machine",
+        "variations": [
+          "Abductor Machine"
+        ],
+        "unilateral": false,
+        "barbell": false,
+        "barWeight": null,
+        "singleArm": false,
+        "id": "d2-abductor-machine",
+        "muscleGroup": "Other"
+      },
+      {
+        "target": "Tricep Extension",
+        "variations": [
+          "Tricep Extension"
+        ],
+        "unilateral": false,
+        "barbell": false,
+        "barWeight": null,
+        "singleArm": false,
+        "id": "d2-tricep-extension",
+        "muscleGroup": "Other"
+      },
+      {
+        "id": "d2-lateral-raise",
+        "target": "Lateral Raise",
+        "variations": [
+          "Lateral Raises"
+        ],
+        "unilateral": false,
+        "barbell": false,
+        "barWeight": null,
+        "singleArm": false,
+        "muscleGroup": "Other"
+      },
+      {
+        "target": "Abs",
+        "variations": [
+          "Kneeling Wood Chopper",
+          "Horizontal Cable Rotation",
+          "Weighted Dead Bug"
+        ],
+        "unilateral": false,
+        "barbell": false,
+        "barWeight": null,
+        "singleArm": false,
+        "id": "d2-abs",
+        "muscleGroup": "Other"
+      }
+    ],
+    "d3": [
+      {
+        "target": "Chest Press",
+        "variations": [
+          "Incline dumbbell chest press"
+        ],
+        "unilateral": false,
+        "barbell": false,
+        "barWeight": null,
+        "singleArm": false,
+        "id": "d3-chest-press",
+        "muscleGroup": "Other"
+      },
+      {
+        "target": "Lat Pulldown",
+        "variations": [
+          "Underhand Lat Pulldown"
+        ],
+        "unilateral": false,
+        "barbell": false,
+        "barWeight": null,
+        "singleArm": false,
+        "id": "d3-lat-pulldown",
+        "muscleGroup": "Other"
+      },
+      {
+        "id": "d3-shoulder-press",
+        "target": "Shoulder Press",
+        "variations": [
+          "New movement"
+        ],
+        "unilateral": false,
+        "barbell": false,
+        "barWeight": null,
+        "singleArm": false,
+        "muscleGroup": "Shoulders"
+      },
+      {
+        "target": "Face Pull",
+        "variations": [
+          "Face Pulls"
+        ],
+        "unilateral": false,
+        "barbell": false,
+        "barWeight": null,
+        "singleArm": false,
+        "id": "d3-face-pull",
+        "muscleGroup": "Other"
+      },
+      {
+        "target": "Bicep Curl",
+        "variations": [
+          "Bicep Curl"
+        ],
+        "unilateral": false,
+        "barbell": false,
+        "barWeight": null,
+        "singleArm": false,
+        "id": "d3-bicep-curl",
+        "muscleGroup": "Biceps"
+      }
+    ],
+    "d4": [
+      {
+        "target": "Front-Foot-Elevated Lunge",
+        "variations": [
+          "Elevated Front Leg Lunge"
+        ],
+        "unilateral": true,
+        "barbell": false,
+        "barWeight": null,
+        "singleArm": false,
+        "id": "d4-front-foot-elevated-lunge",
+        "muscleGroup": "Other"
+      },
+      {
+        "target": "Single Leg Deadlift",
+        "variations": [
+          "Single Leg Deadlift"
+        ],
+        "unilateral": true,
+        "barbell": false,
+        "barWeight": null,
+        "singleArm": false,
+        "id": "d4-single-leg-deadlift",
+        "muscleGroup": "Other"
+      },
+      {
+        "target": "Goblet / Front Squat",
+        "variations": [
+          "Elevated Goblet Squat",
+          "Front Squat"
+        ],
+        "unilateral": false,
+        "barbell": false,
+        "barWeight": null,
+        "singleArm": false,
+        "id": "d4-goblet-front-squat",
+        "muscleGroup": "Other"
+      },
+      {
+        "target": "Abs",
+        "variations": [
+          "Weighted Dead Bug",
+          "Horizontal Cable Rotation",
+          "Kneeling Wood Chopper"
+        ],
+        "unilateral": false,
+        "barbell": false,
+        "barWeight": null,
+        "singleArm": false,
+        "id": "d4-abs",
+        "muscleGroup": "Other"
+      }
+    ]
+  },
+  "dayLabels": {
+    "d1": {
+      "label": "Day 1",
+      "type": "Full"
+    },
+    "d2": {
+      "label": "Day 2",
+      "type": "Full"
+    },
+    "d3": {
+      "label": "Day 3",
+      "type": "Upper"
+    },
+    "d4": {
+      "label": "Day 4",
+      "type": "Lower"
+    }
+  },
+  "movementBank": [],
+  "sessions": {
+    "2026-09-03": {
+      "date": "2026-09-03",
+      "dayId": "d3",
+      "exercises": [
+        {
+          "slotId": "d3-chest-press",
+          "target": "Chest Press",
+          "completed": true,
+          "variation": "Incline Dumbbell Chest Press",
+          "sets": [
+            {
+              "weight": "12.5",
+              "reps": "15"
+            },
+            {
+              "weight": "12.5",
+              "reps": "15"
+            },
+            {
+              "weight": "12.5",
+              "reps": "15"
+            },
+            {
+              "weight": "12.5",
+              "reps": "15"
+            }
+          ]
+        },
+        {
+          "slotId": "d3-lat-pulldown",
+          "target": "Lat Pulldown",
+          "completed": true,
+          "variation": "Underhand Lat Pulldown",
+          "sets": [
+            {
+              "weight": "55",
+              "reps": "17"
+            },
+            {
+              "weight": "55",
+              "reps": "17"
+            },
+            {
+              "weight": "55",
+              "reps": "17"
+            },
+            {
+              "weight": "55",
+              "reps": "17"
+            }
+          ]
+        },
+        {
+          "slotId": "d3-face-pull",
+          "target": "Face Pull",
+          "completed": true,
+          "variation": "Face Pulls",
+          "sets": [
+            {
+              "weight": "10",
+              "reps": "15"
+            },
+            {
+              "weight": "15",
+              "reps": "12"
+            },
+            {
+              "weight": "15",
+              "reps": "12"
+            },
+            {
+              "weight": "15",
+              "reps": "12"
+            }
+          ]
+        },
+        {
+          "slotId": "d3-lateral-raise",
+          "target": "Lateral Raise",
+          "completed": true,
+          "variation": "Lateral Raises",
+          "sets": [
+            {
+              "weight": "7.5",
+              "reps": "15"
+            },
+            {
+              "weight": "5",
+              "reps": "20"
+            },
+            {
+              "weight": "5",
+              "reps": "20"
+            },
+            {
+              "weight": "5",
+              "reps": "20"
+            }
+          ]
+        },
+        {
+          "slotId": "d3-bicep-curl",
+          "target": "Bicep Curl",
+          "completed": true,
+          "variation": "Bicep Curl",
+          "sets": [
+            {
+              "weight": "10",
+              "reps": "15"
+            },
+            {
+              "weight": "10",
+              "reps": "15"
+            },
+            {
+              "weight": "10",
+              "reps": "15"
+            },
+            {
+              "weight": "10",
+              "reps": "15"
+            }
+          ]
+        },
+        {
+          "slotId": null,
+          "target": "Row",
+          "variation": "Dumbbell Row",
+          "completed": true,
+          "sets": [
+            {
+              "weight": "20",
+              "reps": "10"
+            },
+            {
+              "weight": "20",
+              "reps": "10"
+            },
+            {
+              "weight": "20",
+              "reps": "9"
+            },
+            {
+              "weight": "20",
+              "reps": "8"
+            }
+          ]
+        }
+      ]
+    },
+    "2026-09-14": {
+      "date": "2026-09-14",
+      "dayId": "d1",
+      "exercises": [
+        {
+          "slotId": "d1-rdl",
+          "target": "RDL",
+          "completed": false,
+          "variation": "RDL",
+          "sets": []
+        },
+        {
+          "slotId": "d1-walking-lunge",
+          "target": "Walking Lunge",
+          "completed": false,
+          "variation": "Walking Lunges",
+          "sets": []
+        },
+        {
+          "slotId": "d1-hip-thrust",
+          "target": "Hip Thrust",
+          "completed": false,
+          "variation": "Hip Thrust",
+          "sets": []
+        },
+        {
+          "slotId": "d1-row",
+          "target": "Row",
+          "completed": false,
+          "variation": "Dumbbell Row",
+          "sets": []
+        },
+        {
+          "slotId": "d1-chest-press",
+          "target": "Chest Press",
+          "completed": false,
+          "variation": "Flat Dumbbell Chest Press",
+          "sets": []
+        },
+        {
+          "slotId": "d1-bicep-curl",
+          "target": "Bicep Curl",
+          "completed": false,
+          "variation": "Bicep Curl",
+          "sets": []
+        },
+        {
+          "slotId": "d1-abs",
+          "target": "Abs",
+          "completed": false,
+          "variation": "Horizontal Cable Rotation",
+          "sets": []
+        }
+      ]
+    },
+    "2026-09-10": {
+      "date": "2026-09-10",
+      "dayId": "d3",
+      "exercises": [
+        {
+          "slotId": "d3-chest-press",
+          "target": "Chest Press",
+          "completed": true,
+          "variation": "Incline dumbbell chest press",
+          "sets": [
+            {
+              "weight": "12.5",
+              "reps": "17"
+            },
+            {
+              "weight": "12.5",
+              "reps": "17"
+            },
+            {
+              "weight": "12.5",
+              "reps": "17"
+            },
+            {
+              "weight": "12.5",
+              "reps": "17"
+            }
+          ]
+        },
+        {
+          "slotId": "d3-lat-pulldown",
+          "target": "Lat Pulldown",
+          "completed": true,
+          "variation": "Underhand Lat Pulldown",
+          "sets": [
+            {
+              "weight": "60",
+              "reps": "11"
+            },
+            {
+              "weight": "60",
+              "reps": "11"
+            },
+            {
+              "weight": "60",
+              "reps": "11"
+            },
+            {
+              "weight": "60",
+              "reps": "11"
+            }
+          ]
+        },
+        {
+          "slotId": "d3-face-pull",
+          "target": "Face Pull",
+          "completed": true,
+          "variation": "Face Pulls",
+          "sets": [
+            {
+              "weight": "15",
+              "reps": "16"
+            },
+            {
+              "weight": "15",
+              "reps": "16"
+            },
+            {
+              "weight": "15",
+              "reps": "16"
+            },
+            {
+              "weight": "15",
+              "reps": "16"
+            }
+          ]
+        },
+        {
+          "slotId": "d3-lateral-raise",
+          "target": "Lateral Raise",
+          "completed": true,
+          "variation": "Lateral Raises",
+          "sets": [
+            {
+              "weight": "7.5",
+              "reps": "20"
+            },
+            {
+              "weight": "7.5",
+              "reps": "20"
+            },
+            {
+              "weight": "7.5",
+              "reps": "20"
+            },
+            {
+              "weight": "5",
+              "reps": "20"
+            }
+          ]
+        },
+        {
+          "slotId": "d3-bicep-curl",
+          "target": "Bicep Curl",
+          "completed": true,
+          "variation": "Bicep Curl",
+          "sets": [
+            {
+              "weight": "10",
+              "reps": "16"
+            },
+            {
+              "weight": "10",
+              "reps": "16"
+            },
+            {
+              "weight": "10",
+              "reps": "16"
+            },
+            {
+              "weight": "10",
+              "reps": "16"
+            }
+          ]
+        }
+      ]
+    },
+    "2026-08-30": {
+      "date": "2026-08-30",
+      "dayId": "d1",
+      "exercises": [
+        {
+          "slotId": "d1-rdl",
+          "target": "RDL",
+          "completed": true,
+          "variation": "RDL",
+          "sets": [
+            {
+              "weight": "30",
+              "reps": "8"
+            },
+            {
+              "weight": "27.5",
+              "reps": "11"
+            },
+            {
+              "weight": "27.5",
+              "reps": "11"
+            },
+            {
+              "weight": "27.5",
+              "reps": "11"
+            }
+          ]
+        },
+        {
+          "slotId": "d1-walking-lunge",
+          "target": "Walking Lunge",
+          "completed": true,
+          "variation": "Walking Lunges",
+          "sets": [
+            {
+              "weight": "35",
+              "reps": "18"
+            }
+          ]
+        },
+        {
+          "slotId": "d1-hip-thrust",
+          "target": "Hip Thrust",
+          "completed": true,
+          "variation": "Hip Thrust",
+          "sets": [
+            {
+              "weight": "40",
+              "reps": "8"
+            },
+            {
+              "weight": "40",
+              "reps": "8"
+            },
+            {
+              "weight": "40",
+              "reps": "8"
+            },
+            {
+              "weight": "40",
+              "reps": "7"
+            }
+          ]
+        },
+        {
+          "slotId": "d1-row",
+          "target": "Row",
+          "completed": true,
+          "variation": "Dumbbell Row",
+          "sets": [
+            {
+              "weight": "20",
+              "reps": "8"
+            },
+            {
+              "weight": "20",
+              "reps": "8"
+            },
+            {
+              "weight": "20",
+              "reps": "8"
+            },
+            {
+              "weight": "20",
+              "reps": "6"
+            }
+          ]
+        },
+        {
+          "slotId": "d1-chest-press",
+          "target": "Chest Press",
+          "completed": true,
+          "variation": "Flat Dumbbell Chest Press",
+          "sets": [
+            {
+              "weight": "15",
+              "reps": "13"
+            },
+            {
+              "weight": "15",
+              "reps": "13"
+            },
+            {
+              "weight": "15",
+              "reps": "13"
+            },
+            {
+              "weight": "15",
+              "reps": "13"
+            }
+          ]
+        },
+        {
+          "slotId": "d1-bicep-curl",
+          "target": "Bicep Curl",
+          "completed": true,
+          "variation": "Bicep Curl",
+          "sets": [
+            {
+              "weight": "12.5",
+              "reps": "6"
+            },
+            {
+              "weight": "12.5",
+              "reps": "4"
+            },
+            {
+              "weight": "12.5",
+              "reps": "3"
+            },
+            {
+              "weight": "10",
+              "reps": "15"
+            }
+          ]
+        },
+        {
+          "slotId": "d1-abs",
+          "target": "Abs",
+          "completed": true,
+          "variation": "Horizontal Cable Rotation",
+          "sets": [
+            {
+              "weight": "15",
+              "reps": "11"
+            },
+            {
+              "weight": "15",
+              "reps": "12"
+            },
+            {
+              "weight": "15",
+              "reps": "12"
+            },
+            {
+              "weight": "15",
+              "reps": "12"
+            }
+          ]
+        }
+      ]
+    },
+    "2026-08-28": {
+      "date": "2026-08-28",
+      "dayId": "d4",
+      "exercises": [
+        {
+          "slotId": "d4-front-foot-elevated-lunge",
+          "target": "Front-Foot-Elevated Lunge",
+          "completed": true,
+          "variation": "Elevated Front Leg Lunge",
+          "sets": [
+            {
+              "weight": "30",
+              "reps": "12"
+            },
+            {
+              "weight": "30",
+              "reps": "12"
+            },
+            {
+              "weight": "30",
+              "reps": "12"
+            },
+            {
+              "weight": "30",
+              "reps": "12"
+            }
+          ]
+        },
+        {
+          "slotId": "d4-single-leg-deadlift",
+          "target": "Single Leg Deadlift",
+          "completed": true,
+          "variation": "Single Leg Deadlift",
+          "sets": [
+            {
+              "weight": "25",
+              "reps": "10"
+            },
+            {
+              "weight": "25",
+              "reps": "10"
+            },
+            {
+              "weight": "25",
+              "reps": "10"
+            },
+            {
+              "weight": "25",
+              "reps": "10"
+            }
+          ]
+        },
+        {
+          "slotId": "d4-goblet-front-squat",
+          "target": "Goblet / Front Squat",
+          "completed": true,
+          "variation": "Elevated Goblet Squat",
+          "sets": [
+            {
+              "weight": "50",
+              "reps": "12"
+            },
+            {
+              "weight": "50",
+              "reps": "12"
+            },
+            {
+              "weight": "50",
+              "reps": "12"
+            },
+            {
+              "weight": "50",
+              "reps": "12"
+            }
+          ]
+        },
+        {
+          "slotId": "d4-abs",
+          "target": "Abs",
+          "completed": true,
+          "variation": "Weighted Dead Bug",
+          "sets": [
+            {
+              "weight": "10",
+              "reps": "20"
+            },
+            {
+              "weight": "10",
+              "reps": "20"
+            },
+            {
+              "weight": "10",
+              "reps": "20"
+            },
+            {
+              "weight": "10",
+              "reps": "20"
+            }
+          ]
+        }
+      ]
+    },
+    "2026-09-13": {
+      "date": "2026-09-13",
+      "dayId": "d1",
+      "exercises": [
+        {
+          "slotId": "d1-rdl",
+          "target": "RDL",
+          "completed": true,
+          "variation": "RDL",
+          "sets": [
+            {
+              "weight": "30",
+              "reps": "9"
+            },
+            {
+              "weight": "27.5",
+              "reps": "12"
+            },
+            {
+              "weight": "27.5",
+              "reps": "10"
+            },
+            {
+              "weight": "25",
+              "reps": "12"
+            }
+          ]
+        },
+        {
+          "slotId": "d1-walking-lunge",
+          "target": "Walking Lunge",
+          "completed": false,
+          "variation": "Walking Lunges",
+          "sets": []
+        },
+        {
+          "slotId": "d1-hip-thrust",
+          "target": "Hip Thrust",
+          "completed": true,
+          "variation": "Hip Thrust",
+          "sets": [
+            {
+              "weight": "40",
+              "reps": "10"
+            },
+            {
+              "weight": "40",
+              "reps": "10"
+            },
+            {
+              "weight": "40",
+              "reps": "9"
+            },
+            {
+              "weight": "40",
+              "reps": "8"
+            }
+          ]
+        },
+        {
+          "slotId": "d1-row",
+          "target": "Row",
+          "completed": true,
+          "variation": "Dumbbell Row",
+          "sets": [
+            {
+              "weight": "20",
+              "reps": "10"
+            },
+            {
+              "weight": "15",
+              "reps": "15"
+            },
+            {
+              "weight": "15",
+              "reps": "15"
+            },
+            {
+              "weight": "15",
+              "reps": "15"
+            }
+          ]
+        },
+        {
+          "slotId": "d1-chest-press",
+          "target": "Chest Press",
+          "completed": true,
+          "variation": "Flat Dumbbell Chest Press",
+          "sets": [
+            {
+              "weight": "15",
+              "reps": "15"
+            },
+            {
+              "weight": "15",
+              "reps": "15"
+            },
+            {
+              "weight": "15",
+              "reps": "15"
+            },
+            {
+              "weight": "15",
+              "reps": "15"
+            }
+          ]
+        },
+        {
+          "slotId": "d1-bicep-curl",
+          "target": "Bicep Curl",
+          "completed": true,
+          "variation": "Bicep Curl",
+          "sets": [
+            {
+              "weight": "10",
+              "reps": "17"
+            },
+            {
+              "weight": "10",
+              "reps": "17"
+            },
+            {
+              "weight": "10",
+              "reps": "17"
+            },
+            {
+              "weight": "10",
+              "reps": "17"
+            }
+          ]
+        },
+        {
+          "slotId": "d1-abs",
+          "target": "Abs",
+          "completed": true,
+          "variation": "Horizontal Cable Rotation",
+          "sets": [
+            {
+              "weight": "15",
+              "reps": "13"
+            },
+            {
+              "weight": "15",
+              "reps": "13"
+            },
+            {
+              "weight": "15",
+              "reps": "13"
+            },
+            {
+              "weight": "15",
+              "reps": "13"
+            }
+          ]
+        }
+      ]
+    },
+    "2026-09-08": {
+      "date": "2026-09-08",
+      "dayId": "d2",
+      "exercises": [
+        {
+          "slotId": "d2-bulgarian-split-squat",
+          "target": "Bulgarian Split Squat",
+          "completed": false,
+          "variation": "Bulgarian Split Squat",
+          "sets": []
+        },
+        {
+          "slotId": "d2-deadlift",
+          "target": "Deadlift",
+          "completed": false,
+          "variation": "Deadlift",
+          "sets": [
+            {
+              "weight": "15",
+              "reps": "10"
+            },
+            {
+              "weight": "15",
+              "reps": "12"
+            },
+            {
+              "weight": "17.5",
+              "reps": "11"
+            },
+            {
+              "weight": "17.5",
+              "reps": "11"
+            }
+          ]
+        },
+        {
+          "slotId": "d2-row",
+          "target": "Row",
+          "completed": false,
+          "variation": "Cable Row",
+          "sets": [
+            {
+              "weight": "15",
+              "reps": "20"
+            },
+            {
+              "weight": "15",
+              "reps": "20"
+            },
+            {
+              "weight": "15",
+              "reps": "20"
+            },
+            {
+              "weight": "15",
+              "reps": "20"
+            }
+          ]
+        },
+        {
+          "slotId": "d2-shoulder-press",
+          "target": "Shoulder Press",
+          "completed": false,
+          "variation": "Shoulder Press",
+          "sets": [
+            {
+              "weight": "10",
+              "reps": "15"
+            },
+            {
+              "weight": "10",
+              "reps": "15"
+            },
+            {
+              "weight": "10",
+              "reps": "15"
+            },
+            {
+              "weight": "10",
+              "reps": "15"
+            }
+          ]
+        },
+        {
+          "slotId": "d2-abductor-machine",
+          "target": "Abductor Machine",
+          "completed": false,
+          "variation": "Abductor Machine",
+          "sets": [
+            {
+              "weight": "110",
+              "reps": "12"
+            },
+            {
+              "weight": "110",
+              "reps": "13"
+            },
+            {
+              "weight": "110",
+              "reps": "13"
+            },
+            {
+              "weight": "110",
+              "reps": "13"
+            }
+          ]
+        },
+        {
+          "slotId": "d2-tricep-extension",
+          "target": "Tricep Extension",
+          "completed": false,
+          "variation": "Tricep Extension",
+          "sets": [
+            {
+              "weight": "10",
+              "reps": "10"
+            },
+            {
+              "weight": "10",
+              "reps": "10"
+            },
+            {
+              "weight": "10",
+              "reps": "10"
+            },
+            {
+              "weight": "10",
+              "reps": "10"
+            }
+          ]
+        },
+        {
+          "slotId": "d2-abs",
+          "target": "Abs",
+          "completed": true,
+          "variation": "Weighted Dead Bug",
+          "sets": [
+            {
+              "weight": "12.5",
+              "reps": "16"
+            },
+            {
+              "weight": "12.5",
+              "reps": "20"
+            },
+            {
+              "weight": "12.5",
+              "reps": "20"
+            },
+            {
+              "weight": "12.5",
+              "reps": "20"
+            }
+          ]
+        }
+      ]
+    },
+    "2026-09-17": {
+      "date": "2026-09-17",
+      "dayId": "d3",
+      "exercises": [
+        {
+          "slotId": "d3-chest-press",
+          "target": "Chest Press",
+          "completed": false,
+          "variation": "Incline dumbbell chest press",
+          "sets": []
+        },
+        {
+          "slotId": "d3-lat-pulldown",
+          "target": "Lat Pulldown",
+          "completed": false,
+          "variation": "Underhand Lat Pulldown",
+          "sets": []
+        },
+        {
+          "slotId": "d3-shoulder-press",
+          "target": "Shoulder Press",
+          "completed": false,
+          "variation": "New movement",
+          "sets": []
+        },
+        {
+          "slotId": "d3-face-pull",
+          "target": "Face Pull",
+          "completed": false,
+          "variation": "Face Pulls",
+          "sets": []
+        },
+        {
+          "slotId": "d3-bicep-curl",
+          "target": "Bicep Curl",
+          "completed": false,
+          "variation": "Bicep Curl",
+          "sets": []
+        }
+      ]
+    },
+    "2026-09-01": {
+      "date": "2026-09-01",
+      "dayId": "d2",
+      "exercises": [
+        {
+          "slotId": "d2-bulgarian-split-squat",
+          "target": "Bulgarian Split Squat",
+          "completed": false,
+          "variation": "Bulgarian Split Squat",
+          "sets": [
+            {
+              "weight": "30",
+              "reps": "11"
+            },
+            {
+              "weight": "30",
+              "reps": "11"
+            },
+            {
+              "weight": "30",
+              "reps": "11"
+            },
+            {
+              "weight": "30",
+              "reps": "11"
+            }
+          ]
+        },
+        {
+          "slotId": "d2-deadlift",
+          "target": "Deadlift",
+          "completed": false,
+          "variation": "Deadlift",
+          "sets": [
+            {
+              "weight": "17.5",
+              "reps": "10"
+            },
+            {
+              "weight": "17.5",
+              "reps": "10"
+            },
+            {
+              "weight": "17.5",
+              "reps": "10"
+            },
+            {
+              "weight": "17.5",
+              "reps": "10"
+            }
+          ]
+        },
+        {
+          "slotId": "d2-row",
+          "target": "Row",
+          "unilateral": false,
+          "singleArm": true,
+          "completed": false,
+          "variation": "Cable Row",
+          "sets": [
+            {
+              "weight": "20",
+              "reps": "8",
+              "side": "L"
+            },
+            {
+              "weight": "20",
+              "reps": "8",
+              "side": "R"
+            },
+            {
+              "weight": "15",
+              "reps": "10",
+              "side": "L"
+            },
+            {
+              "weight": "15",
+              "reps": "10",
+              "side": "R"
+            },
+            {
+              "weight": "15",
+              "reps": "10",
+              "side": "L"
+            },
+            {
+              "weight": "15",
+              "reps": "10",
+              "side": "R"
+            }
+          ]
+        },
+        {
+          "slotId": "d2-shoulder-press",
+          "target": "Shoulder Press",
+          "completed": false,
+          "variation": "Shoulder Press",
+          "sets": [
+            {
+              "weight": "12.5",
+              "reps": "6"
+            },
+            {
+              "weight": "10",
+              "reps": "11"
+            },
+            {
+              "weight": "10",
+              "reps": "11"
+            },
+            {
+              "weight": "10",
+              "reps": "12"
+            }
+          ]
+        },
+        {
+          "slotId": "d2-abductor-machine",
+          "target": "Abductor Machine",
+          "completed": false,
+          "variation": "Abductor Machine",
+          "sets": [
+            {
+              "weight": "110",
+              "reps": "12"
+            },
+            {
+              "weight": "110",
+              "reps": "12"
+            },
+            {
+              "weight": "110",
+              "reps": "12"
+            },
+            {
+              "weight": "110",
+              "reps": "12"
+            }
+          ]
+        },
+        {
+          "slotId": "d2-tricep-extension",
+          "target": "Tricep Extension",
+          "completed": false,
+          "variation": "Tricep Extension",
+          "sets": [
+            {
+              "weight": "5",
+              "reps": "10"
+            },
+            {
+              "weight": "5",
+              "reps": "12"
+            },
+            {
+              "weight": "5",
+              "reps": "12"
+            },
+            {
+              "weight": "5",
+              "reps": "12"
+            }
+          ]
+        },
+        {
+          "slotId": "d2-abs",
+          "target": "Abs",
+          "completed": false,
+          "variation": "Weighted Dead Bug",
+          "sets": [
+            {
+              "weight": "10",
+              "reps": "24"
+            },
+            {
+              "weight": "10",
+              "reps": "24"
+            },
+            {
+              "weight": "10",
+              "reps": "24"
+            }
+          ]
+        }
+      ]
+    },
+    "2026-09-04": {
+      "date": "2026-09-04",
+      "dayId": "d4",
+      "exercises": [
+        {
+          "slotId": "d4-front-foot-elevated-lunge",
+          "target": "Front-Foot-Elevated Lunge",
+          "completed": false,
+          "variation": "Elevated Front Leg Lunge",
+          "sets": [
+            {
+              "weight": "30",
+              "reps": "12"
+            },
+            {
+              "weight": "30",
+              "reps": "12"
+            },
+            {
+              "weight": "30",
+              "reps": "12"
+            },
+            {
+              "weight": "30",
+              "reps": "12"
+            }
+          ]
+        },
+        {
+          "slotId": "d4-single-leg-deadlift",
+          "target": "Single Leg Deadlift",
+          "completed": false,
+          "variation": "Single Leg Deadlift",
+          "sets": [
+            {
+              "weight": "25",
+              "reps": "10"
+            },
+            {
+              "weight": "25",
+              "reps": "11"
+            },
+            {
+              "weight": "25",
+              "reps": "11"
+            },
+            {
+              "weight": "25",
+              "reps": "11"
+            }
+          ]
+        },
+        {
+          "slotId": "d4-goblet-front-squat",
+          "target": "Goblet / Front Squat",
+          "completed": false,
+          "variation": "Elevated Goblet Squat",
+          "sets": [
+            {
+              "weight": "50",
+              "reps": "10"
+            }
+          ]
+        },
+        {
+          "slotId": "d4-abs",
+          "target": "Abs",
+          "completed": false,
+          "variation": "Kneeling Wood Chopper",
+          "sets": [
+            {
+              "weight": "5",
+              "reps": "10"
+            },
+            {
+              "weight": "5",
+              "reps": "10"
+            },
+            {
+              "weight": "5",
+              "reps": "10"
+            },
+            {
+              "weight": "5",
+              "reps": "10"
+            }
+          ]
+        },
+        {
+          "slotId": null,
+          "target": "Leg Press",
+          "variation": "Leg Press",
+          "completed": false,
+          "sets": [
+            {
+              "weight": "185",
+              "reps": "14"
+            },
+            {
+              "weight": "185",
+              "reps": "14"
+            },
+            {
+              "weight": "185",
+              "reps": "14"
+            },
+            {
+              "weight": "185",
+              "reps": "14"
+            }
+          ]
+        }
+      ]
+    },
+    "2026-09-02": {
+      "date": "2026-09-02",
+      "dayId": "d1",
+      "exercises": [
+        {
+          "slotId": "d1-rdl",
+          "target": "RDL",
+          "completed": false,
+          "variation": "RDL",
+          "sets": []
+        },
+        {
+          "slotId": "d1-walking-lunge",
+          "target": "Walking Lunge",
+          "completed": false,
+          "variation": "Walking Lunges",
+          "sets": []
+        },
+        {
+          "slotId": "d1-hip-thrust",
+          "target": "Hip Thrust",
+          "completed": false,
+          "variation": "Hip Thrust",
+          "sets": []
+        },
+        {
+          "slotId": "d1-row",
+          "target": "Row",
+          "completed": false,
+          "variation": "Dumbbell Row",
+          "sets": []
+        },
+        {
+          "slotId": "d1-chest-press",
+          "target": "Chest Press",
+          "completed": false,
+          "variation": "Flat Dumbbell Chest Press",
+          "sets": []
+        },
+        {
+          "slotId": "d1-bicep-curl",
+          "target": "Bicep Curl",
+          "completed": false,
+          "variation": "Bicep Curl",
+          "sets": []
+        },
+        {
+          "slotId": "d1-abs",
+          "target": "Abs",
+          "completed": false,
+          "variation": "Horizontal Cable Rotation",
+          "sets": []
+        }
+      ]
+    },
+    "2026-08-23": {
+      "date": "2026-08-23",
+      "dayId": "d1",
+      "exercises": [
+        {
+          "slotId": "d1-rdl",
+          "target": "RDL",
+          "completed": true,
+          "variation": "RDL",
+          "sets": [
+            {
+              "weight": "27.5",
+              "reps": "10"
+            },
+            {
+              "weight": "27.5",
+              "reps": "10"
+            },
+            {
+              "weight": "27.5",
+              "reps": "10"
+            },
+            {
+              "weight": "27.5",
+              "reps": "10"
+            }
+          ]
+        },
+        {
+          "slotId": "d1-hip-thrust",
+          "target": "Hip Thrust",
+          "completed": true,
+          "variation": "Hip Thrust",
+          "sets": [
+            {
+              "weight": "37.5",
+              "reps": "9"
+            },
+            {
+              "weight": "37.5",
+              "reps": "9"
+            },
+            {
+              "weight": "37.5",
+              "reps": "9"
+            },
+            {
+              "weight": "37.5",
+              "reps": "9"
+            }
+          ]
+        },
+        {
+          "slotId": "d1-walking-lunge",
+          "target": "Walking Lunge",
+          "completed": true,
+          "variation": "Walking Lunges",
+          "sets": [
+            {
+              "weight": "35",
+              "reps": "16"
+            },
+            {
+              "weight": "35",
+              "reps": "16"
+            },
+            {
+              "weight": "35",
+              "reps": "16"
+            }
+          ]
+        },
+        {
+          "slotId": "d1-row",
+          "target": "Row",
+          "completed": true,
+          "variation": "Dumbbell Row",
+          "sets": [
+            {
+              "weight": "15",
+              "reps": "15"
+            },
+            {
+              "weight": "15",
+              "reps": "15"
+            },
+            {
+              "weight": "15",
+              "reps": "15"
+            },
+            {
+              "weight": "15",
+              "reps": "15"
+            }
+          ]
+        },
+        {
+          "slotId": "d1-chest-press",
+          "target": "Chest Press",
+          "completed": true,
+          "variation": "Flat Dumbbell Chest Press",
+          "sets": [
+            {
+              "weight": "15",
+              "reps": "12"
+            },
+            {
+              "weight": "15",
+              "reps": "12"
+            },
+            {
+              "weight": "15",
+              "reps": "12"
+            },
+            {
+              "weight": "15",
+              "reps": "12"
+            }
+          ]
+        },
+        {
+          "slotId": "d1-bicep-curl",
+          "target": "Bicep Curl",
+          "completed": true,
+          "variation": "Bicep Curl",
+          "sets": [
+            {
+              "weight": "10",
+              "reps": "15"
+            },
+            {
+              "weight": "10",
+              "reps": "15"
+            },
+            {
+              "weight": "10",
+              "reps": "15"
+            },
+            {
+              "weight": "10",
+              "reps": "15"
+            }
+          ]
+        },
+        {
+          "slotId": "d1-abs",
+          "target": "Abs",
+          "completed": true,
+          "variation": "Weighted Dead Bug",
+          "sets": [
+            {
+              "weight": "10",
+              "reps": "20"
+            },
+            {
+              "weight": "10",
+              "reps": "20"
+            },
+            {
+              "weight": "10",
+              "reps": "20"
+            },
+            {
+              "weight": "10",
+              "reps": "20"
+            }
+          ]
+        }
+      ]
+    },
+    "2026-09-07": {
+      "date": "2026-09-07",
+      "dayId": "d1",
+      "exercises": [
+        {
+          "slotId": "d1-rdl",
+          "target": "RDL",
+          "completed": false,
+          "variation": "RDL",
+          "sets": []
+        },
+        {
+          "slotId": "d1-walking-lunge",
+          "target": "Walking Lunge",
+          "completed": false,
+          "variation": "Walking Lunges",
+          "sets": []
+        },
+        {
+          "slotId": "d1-hip-thrust",
+          "target": "Hip Thrust",
+          "completed": false,
+          "variation": "Hip Thrust",
+          "sets": []
+        },
+        {
+          "slotId": "d1-row",
+          "target": "Row",
+          "completed": false,
+          "variation": "Dumbbell Row",
+          "sets": []
+        },
+        {
+          "slotId": "d1-chest-press",
+          "target": "Chest Press",
+          "completed": false,
+          "variation": "Flat Dumbbell Chest Press",
+          "sets": []
+        },
+        {
+          "slotId": "d1-bicep-curl",
+          "target": "Bicep Curl",
+          "completed": false,
+          "variation": "Bicep Curl",
+          "sets": []
+        },
+        {
+          "slotId": "d1-abs",
+          "target": "Abs",
+          "completed": false,
+          "variation": "Horizontal Cable Rotation",
+          "sets": []
+        }
+      ]
+    },
+    "2026-08-25": {
+      "date": "2026-08-25",
+      "dayId": "d2",
+      "exercises": [
+        {
+          "slotId": "d2-bulgarian-split-squat",
+          "target": "Bulgarian Split Squat",
+          "completed": true,
+          "variation": "Bulgarian Split Squat",
+          "sets": [
+            {
+              "weight": "30",
+              "reps": "10"
+            },
+            {
+              "weight": "30",
+              "reps": "10"
+            },
+            {
+              "weight": "30",
+              "reps": "10"
+            },
+            {
+              "weight": "30",
+              "reps": "10"
+            }
+          ]
+        },
+        {
+          "slotId": "d2-deadlift",
+          "target": "Deadlift",
+          "completed": true,
+          "variation": "Deadlift",
+          "sets": [
+            {
+              "weight": "15",
+              "reps": "10"
+            },
+            {
+              "weight": "15",
+              "reps": "10"
+            },
+            {
+              "weight": "15",
+              "reps": "10"
+            },
+            {
+              "weight": "15",
+              "reps": "10"
+            }
+          ]
+        },
+        {
+          "slotId": "d2-row",
+          "target": "Row",
+          "completed": false,
+          "variation": "Cable Row",
+          "sets": []
+        },
+        {
+          "slotId": "d2-shoulder-press",
+          "target": "Shoulder Press",
+          "completed": true,
+          "variation": "Shoulder Press",
+          "sets": [
+            {
+              "weight": "12.5",
+              "reps": "8"
+            },
+            {
+              "weight": "12.5",
+              "reps": "6"
+            },
+            {
+              "weight": "12.5",
+              "reps": "4"
+            },
+            {
+              "weight": "12.5",
+              "reps": "2"
+            }
+          ]
+        },
+        {
+          "slotId": "d2-abductor-machine",
+          "target": "Abductor Machine",
+          "completed": true,
+          "variation": "Abductor Machine",
+          "sets": []
+        },
+        {
+          "slotId": "d2-tricep-extension",
+          "target": "Tricep Extension",
+          "completed": true,
+          "variation": "Tricep Extension",
+          "sets": [
+            {
+              "weight": "5",
+              "reps": "10"
+            },
+            {
+              "weight": "5",
+              "reps": "10"
+            },
+            {
+              "weight": "5",
+              "reps": "10"
+            },
+            {
+              "weight": "5",
+              "reps": "10"
+            }
+          ]
+        },
+        {
+          "slotId": "d2-abs",
+          "target": "Abs",
+          "completed": true,
+          "variation": "Horizontal Cable Rotation",
+          "sets": [
+            {
+              "weight": "15",
+              "reps": "10"
+            },
+            {
+              "weight": "15",
+              "reps": "10"
+            },
+            {
+              "weight": "15",
+              "reps": "10"
+            },
+            {
+              "weight": "15",
+              "reps": "10"
+            }
+          ]
+        }
+      ]
+    },
+    "2026-09-11": {
+      "date": "2026-09-11",
+      "dayId": "d4",
+      "exercises": [
+        {
+          "slotId": "d4-front-foot-elevated-lunge",
+          "target": "Front-Foot-Elevated Lunge",
+          "completed": true,
+          "variation": "Elevated Front Leg Lunge",
+          "sets": [
+            {
+              "weight": "30",
+              "reps": "13"
+            },
+            {
+              "weight": "30",
+              "reps": "13"
+            },
+            {
+              "weight": "30",
+              "reps": "13"
+            },
+            {
+              "weight": "30",
+              "reps": "13"
+            }
+          ]
+        },
+        {
+          "slotId": "d4-single-leg-deadlift",
+          "target": "Single Leg Deadlift",
+          "completed": true,
+          "variation": "Single Leg Deadlift",
+          "sets": [
+            {
+              "weight": "25",
+              "reps": "12"
+            },
+            {
+              "weight": "25",
+              "reps": "12"
+            },
+            {
+              "weight": "25",
+              "reps": "12"
+            },
+            {
+              "weight": "25",
+              "reps": "12"
+            }
+          ]
+        },
+        {
+          "slotId": "d4-goblet-front-squat",
+          "target": "Goblet / Front Squat",
+          "completed": true,
+          "variation": "Elevated Goblet Squat",
+          "sets": [
+            {
+              "weight": "45",
+              "reps": "10"
+            },
+            {
+              "weight": "45",
+              "reps": "10"
+            },
+            {
+              "weight": "45",
+              "reps": "10"
+            },
+            {
+              "weight": "45",
+              "reps": "10"
+            }
+          ]
+        },
+        {
+          "slotId": "d4-abs",
+          "target": "Abs",
+          "completed": true,
+          "variation": "Weighted Dead Bug",
+          "sets": [
+            {
+              "weight": "12.5",
+              "reps": "20"
+            },
+            {
+              "weight": "12.5",
+              "reps": "20"
+            },
+            {
+              "weight": "12.5",
+              "reps": "20"
+            },
+            {
+              "weight": "12.5",
+              "reps": "20"
+            }
+          ]
+        }
+      ]
+    },
+    "2026-08-27": {
+      "date": "2026-08-27",
+      "dayId": "d3",
+      "exercises": [
+        {
+          "slotId": "d3-chest-press",
+          "target": "Chest Press",
+          "completed": true,
+          "variation": "Incline Dumbbell Chest Press",
+          "sets": [
+            {
+              "weight": "12.5",
+              "reps": "10"
+            },
+            {
+              "weight": "12.5",
+              "reps": "10"
+            },
+            {
+              "weight": "12.5",
+              "reps": "10"
+            },
+            {
+              "weight": "12.5",
+              "reps": "10"
+            }
+          ]
+        },
+        {
+          "slotId": "d3-lat-pulldown",
+          "target": "Lat Pulldown",
+          "completed": true,
+          "variation": "Underhand Lat Pulldown",
+          "sets": [
+            {
+              "weight": "55",
+              "reps": "10"
+            },
+            {
+              "weight": "55",
+              "reps": "10"
+            },
+            {
+              "weight": "55",
+              "reps": "10"
+            },
+            {
+              "weight": "55",
+              "reps": "10"
+            }
+          ]
+        },
+        {
+          "slotId": "d3-face-pull",
+          "target": "Face Pull",
+          "completed": true,
+          "variation": "Face Pulls",
+          "sets": [
+            {
+              "weight": "10",
+              "reps": "10"
+            },
+            {
+              "weight": "10",
+              "reps": "10"
+            },
+            {
+              "weight": "10",
+              "reps": "10"
+            },
+            {
+              "weight": "10",
+              "reps": "10"
+            }
+          ]
+        },
+        {
+          "slotId": "d3-lateral-raise",
+          "target": "Lateral Raise",
+          "completed": true,
+          "variation": "Lateral Raises",
+          "sets": [
+            {
+              "weight": "5",
+              "reps": "20"
+            },
+            {
+              "weight": "5",
+              "reps": "20"
+            },
+            {
+              "weight": "5",
+              "reps": "20"
+            },
+            {
+              "weight": "5",
+              "reps": "20"
+            }
+          ]
+        },
+        {
+          "slotId": "d3-bicep-curl",
+          "target": "Bicep Curl",
+          "completed": true,
+          "variation": "Bicep Curl",
+          "sets": [
+            {
+              "weight": "10",
+              "reps": "15"
+            },
+            {
+              "weight": "10",
+              "reps": "15"
+            },
+            {
+              "weight": "10",
+              "reps": "15"
+            },
+            {
+              "weight": "10",
+              "reps": "15"
+            }
+          ]
+        }
+      ]
+    },
+    "2026-08-31": {
+      "date": "2026-08-31",
+      "dayId": "d1",
+      "exercises": [
+        {
+          "slotId": "d1-rdl",
+          "target": "RDL",
+          "completed": false,
+          "variation": "RDL",
+          "sets": []
+        },
+        {
+          "slotId": "d1-hip-thrust",
+          "target": "Hip Thrust",
+          "completed": false,
+          "variation": "Hip Thrust",
+          "sets": []
+        },
+        {
+          "slotId": "d1-walking-lunge",
+          "target": "Walking Lunge",
+          "completed": false,
+          "variation": "Walking Lunges",
+          "sets": []
+        },
+        {
+          "slotId": "d1-row",
+          "target": "Row",
+          "completed": false,
+          "variation": "Dumbbell Row",
+          "sets": []
+        },
+        {
+          "slotId": "d1-chest-press",
+          "target": "Chest Press",
+          "completed": false,
+          "variation": "Flat Dumbbell Chest Press",
+          "sets": []
+        },
+        {
+          "slotId": "d1-bicep-curl",
+          "target": "Bicep Curl",
+          "completed": false,
+          "variation": "Bicep Curl",
+          "sets": []
+        },
+        {
+          "slotId": "d1-abs",
+          "target": "Abs",
+          "completed": false,
+          "variation": "Horizontal Cable Rotation",
+          "sets": [
+            {
+              "weight": "",
+              "reps": "",
+              "rest": ""
+            }
+          ]
+        }
+      ]
+    },
+    "2026-09-06": {
+      "date": "2026-09-06",
+      "dayId": "d1",
+      "sessionDuration": 5469,
+      "exercises": [
+        {
+          "slotId": "d1-rdl",
+          "target": "RDL",
+          "completed": true,
+          "variation": "RDL",
+          "sets": [
+            {
+              "weight": "27.5",
+              "reps": "12"
+            },
+            {
+              "weight": "27.5",
+              "reps": "12"
+            },
+            {
+              "weight": "27.5",
+              "reps": "12"
+            },
+            {
+              "weight": "27.5",
+              "reps": "12"
+            }
+          ]
+        },
+        {
+          "slotId": "d1-walking-lunge",
+          "target": "Walking Lunge",
+          "completed": true,
+          "variation": "Walking Lunges",
+          "sets": [
+            {
+              "weight": "35",
+              "reps": "16"
+            },
+            {
+              "weight": "35",
+              "reps": "16"
+            },
+            {
+              "weight": "35",
+              "reps": "16"
+            },
+            {
+              "weight": "35",
+              "reps": "16"
+            }
+          ]
+        },
+        {
+          "slotId": "d1-hip-thrust",
+          "target": "Hip Thrust",
+          "completed": true,
+          "variation": "Hip Thrust",
+          "sets": [
+            {
+              "weight": "40",
+              "reps": "9"
+            },
+            {
+              "weight": "40",
+              "reps": "9"
+            },
+            {
+              "weight": "40",
+              "reps": "9"
+            },
+            {
+              "weight": "40",
+              "reps": "9"
+            }
+          ]
+        },
+        {
+          "slotId": "d1-row",
+          "target": "Row",
+          "completed": true,
+          "variation": "Dumbbell Row",
+          "sets": [
+            {
+              "weight": "20",
+              "reps": "7"
+            },
+            {
+              "weight": "15",
+              "reps": "10"
+            },
+            {
+              "weight": "15",
+              "reps": "12"
+            },
+            {
+              "weight": "15",
+              "reps": "12"
+            }
+          ]
+        },
+        {
+          "slotId": "d1-chest-press",
+          "target": "Chest Press",
+          "completed": true,
+          "variation": "Flat Dumbbell Chest Press",
+          "sets": [
+            {
+              "weight": "15",
+              "reps": "14"
+            },
+            {
+              "weight": "15",
+              "reps": "14"
+            },
+            {
+              "weight": "15",
+              "reps": "14"
+            },
+            {
+              "weight": "15",
+              "reps": "14"
+            }
+          ]
+        },
+        {
+          "slotId": "d1-bicep-curl",
+          "target": "Bicep Curl",
+          "completed": true,
+          "variation": "Bicep Curl",
+          "sets": [
+            {
+              "weight": "10",
+              "reps": "12"
+            },
+            {
+              "weight": "10",
+              "reps": "12"
+            },
+            {
+              "weight": "10",
+              "reps": "12"
+            }
+          ]
+        },
+        {
+          "slotId": "d1-abs",
+          "target": "Abs",
+          "completed": true,
+          "variation": "Horizontal Cable Rotation",
+          "sets": [
+            {
+              "weight": "15",
+              "reps": "11"
+            },
+            {
+              "weight": "15",
+              "reps": "11"
+            },
+            {
+              "weight": "15",
+              "reps": "11"
+            },
+            {
+              "weight": "15",
+              "reps": "11"
+            }
+          ]
+        }
+      ]
+    },
+    "2026-09-05": {
+      "date": "2026-09-05",
+      "dayId": "d1",
+      "exercises": [
+        {
+          "slotId": "d1-rdl",
+          "target": "RDL",
+          "completed": false,
+          "variation": "RDL",
+          "sets": []
+        },
+        {
+          "slotId": "d1-walking-lunge",
+          "target": "Walking Lunge",
+          "completed": false,
+          "variation": "Walking Lunges",
+          "sets": []
+        },
+        {
+          "slotId": "d1-hip-thrust",
+          "target": "Hip Thrust",
+          "completed": false,
+          "variation": "Hip Thrust",
+          "sets": []
+        },
+        {
+          "slotId": "d1-row",
+          "target": "Row",
+          "completed": false,
+          "variation": "Dumbbell Row",
+          "sets": []
+        },
+        {
+          "slotId": "d1-chest-press",
+          "target": "Chest Press",
+          "completed": false,
+          "variation": "Incline Dumbbell Chest Press",
+          "sets": []
+        },
+        {
+          "slotId": "d1-bicep-curl",
+          "target": "Bicep Curl",
+          "completed": false,
+          "variation": "Bicep Curl",
+          "sets": []
+        },
+        {
+          "slotId": "d1-abs",
+          "target": "Abs",
+          "completed": false,
+          "variation": "Horizontal Cable Rotation",
+          "sets": []
+        }
+      ]
+    },
+    "2026-09-12": {
+      "date": "2026-09-12",
+      "dayId": "d1",
+      "exercises": [
+        {
+          "slotId": "d1-rdl",
+          "target": "RDL",
+          "completed": false,
+          "variation": "RDL",
+          "sets": []
+        },
+        {
+          "slotId": "d1-walking-lunge",
+          "target": "Walking Lunge",
+          "completed": false,
+          "variation": "Walking Lunges",
+          "sets": []
+        },
+        {
+          "slotId": "d1-hip-thrust",
+          "target": "Hip Thrust",
+          "completed": false,
+          "variation": "Hip Thrust",
+          "sets": []
+        },
+        {
+          "slotId": "d1-row",
+          "target": "Row",
+          "completed": false,
+          "variation": "Cable Row",
+          "sets": []
+        },
+        {
+          "slotId": "d1-chest-press",
+          "target": "Chest Press",
+          "completed": false,
+          "variation": "Flat Dumbbell Chest Press",
+          "sets": []
+        },
+        {
+          "slotId": "d1-bicep-curl",
+          "target": "Bicep Curl",
+          "completed": false,
+          "variation": "Bicep Curl",
+          "sets": []
+        },
+        {
+          "slotId": "d1-abs",
+          "target": "Abs",
+          "completed": false,
+          "variation": "Weighted Dead Bug",
+          "sets": []
+        }
+      ]
+    }
+  },
+  "cycleEntries": {},
+  "protein": {},
+  "cycleSettings": {
+    "avgCycleLength": 31,
+    "periodLength": 4
+  },
+  "periodRanges": []
+};
+  function seedPreviewDataIfEmpty(){
+    if(getJSON('preview-seeded', false)) return;
+    if(PREVIEW_SEED.plans) Object.keys(PREVIEW_SEED.plans).forEach(dayId => setJSON('plan:'+dayId, PREVIEW_SEED.plans[dayId]));
+    if(PREVIEW_SEED.dayLabels) setJSON('day-labels', PREVIEW_SEED.dayLabels);
+    if(PREVIEW_SEED.movementBank) setJSON('movement-bank', PREVIEW_SEED.movementBank);
+    if(PREVIEW_SEED.sessions) Object.keys(PREVIEW_SEED.sessions).forEach(date => setJSON('session:'+date, PREVIEW_SEED.sessions[date]));
+    if(PREVIEW_SEED.cycleEntries) Object.keys(PREVIEW_SEED.cycleEntries).forEach(date => setJSON('cycle:'+date, PREVIEW_SEED.cycleEntries[date]));
+    if(PREVIEW_SEED.protein) Object.keys(PREVIEW_SEED.protein).forEach(date => setJSON('protein:'+date, PREVIEW_SEED.protein[date]));
+    if(PREVIEW_SEED.cycleSettings) setJSON('cycle-settings', PREVIEW_SEED.cycleSettings);
+    if(PREVIEW_SEED.periodRanges && PREVIEW_SEED.periodRanges.length) setJSON('period-ranges', PREVIEW_SEED.periodRanges);
+    setJSON('preview-seeded', true);
+  }
+  seedPreviewDataIfEmpty();
 
   init();
 })();
