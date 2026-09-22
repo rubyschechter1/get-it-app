@@ -97,6 +97,15 @@
   .day-pill .cyc{width:14px; height:3px; border-radius:2px; background:var(--line); margin-top:1px;}
   .day-pill .cyc.period{background:var(--rose);}
   .day-pill .cyc.follicular{background:#8FAF8A;}
+  /* Most-fertile days: the phase line under the date turns dotted.
+     Ovulation start day: solid circle around the date. */
+  .day-pill .cyc.fertile, .month-cell .mc-phase.fertile{background:transparent !important; height:0; border-top:2.5px dotted var(--amber); width:16px;}
+  .day-pill .cyc.fertile.pre-ov, .month-cell .mc-phase.fertile.pre-ov{border-top-color:var(--amber);}
+  .day-pill .cyc.fertile.predicted, .month-cell .mc-phase.fertile.predicted{opacity:1;}
+  .month-cell .mc-phase.fertile{width:14px;}
+  .day-pill.peak .mark{box-shadow:0 0 0 1.5px var(--amber); border-radius:50%;}
+  .day-pill .cyc.pre-ov, .month-cell .mc-phase.pre-ov{background:#F0D3A4;}
+  .month-cell.peak .mc-num{box-shadow:0 0 0 1.5px var(--amber); border-radius:50%; min-width:20px; line-height:20px; text-align:center;}
   .day-pill .cyc.ovulation{background:var(--amber);}
   .day-pill .cyc.luteal{background:#9986B8;}
   .day-pill .cyc.predicted{opacity:0.45;}
@@ -1215,6 +1224,9 @@
   function periodRangeForStart(startDate){
     return state.periodRanges.find(r => r.start === startDate) || null;
   }
+  // Most-fertile stretch (8 days): 4 days before the first ovulation day,
+  // plus the first ovulation day and the 3 after it.
+  const FERTILE_BEFORE = 4, FERTILE_AFTER = 3, OV_DAYS_BEFORE_PERIOD = 15;
   function predictPhase(dateStr){
     if(!state.periodRanges.length) return 'unknown';
     if(isLoggedPeriodDay(dateStr)) return 'period';
@@ -1249,9 +1261,44 @@
     }
 
     if(cycleDay <= pLen) return 'period';
-    if(cycleDay <= Math.round(cycleLen*0.46)) return 'follicular';
-    if(cycleDay <= Math.round(cycleLen*0.57)) return 'ovulation';
+    // Ovulation is estimated back from the next period (the luteal phase is
+    // the stable part of the cycle). The "ovulation" phase shown is the whole
+    // most-fertile stretch: 4 days leading up to the first ovulation day,
+    // then 4 ovulation days (first ovulation day = 15 days before next period).
+    const ovStart = cycleLen - 14;
+    if(cycleDay < ovStart - FERTILE_BEFORE) return 'follicular';
+    if(cycleDay <= ovStart + FERTILE_AFTER) return 'ovulation';
     return 'luteal';
+  }
+  // Where a date sits relative to its cycle's first ovulation day:
+  // 0 = ovulation starts, negative = days before, positive = days after.
+  // null when there's no cycle data or it's a logged period day.
+  function ovulationOffset(dateStr){
+    if(!state.periodRanges.length || isLoggedPeriodDay(dateStr)) return null;
+    const starts = periodStartDates().slice().sort();
+    let priorStart = null, nextStart = null;
+    for(const s of starts){
+      if(s <= dateStr) priorStart = s;
+      if(s > dateStr && nextStart === null) nextStart = s;
+    }
+    let cycleDay, cycleLen;
+    if(priorStart && nextStart){
+      cycleLen = daysBetween(priorStart, nextStart);
+      cycleDay = daysBetween(priorStart, dateStr) + 1;
+    } else {
+      if(!priorStart) priorStart = starts[0];
+      cycleLen = state.cycleSettings.avgCycleLength;
+      let d = daysBetween(priorStart, dateStr) % cycleLen;
+      if(d < 0) d += cycleLen;
+      cycleDay = d + 1;
+    }
+    return cycleDay - (cycleLen - 14);
+  }
+  function isPeakFertileDay(dateStr){ return ovulationOffset(dateStr) === 0; } // first ovulation day
+  // Fertile days leading up to ovulation — drawn lighter than ovulation days.
+  function isPreOvulationFertile(dateStr){
+    const o = ovulationOffset(dateStr);
+    return o !== null && o < 0 && o >= -FERTILE_BEFORE && phaseForDate(dateStr) === 'ovulation';
   }
   function phaseForDate(dateStr){
     if(state.cycleEntries[dateStr] && state.cycleEntries[dateStr].phase){
@@ -1291,12 +1338,12 @@
   }
   // Fertile window estimated backward from the next predicted period: ovulation
   // is typically ~14 days before the next period regardless of cycle length,
-  // with the fertile window running from 5 days before ovulation to 1 day after.
+  // with the most-fertile stretch running from 4 days before to 3 days after.
   function fertileWindow(){
     const next = nextPeriodDate();
     if(!next) return null;
-    const ovulation = addDays(next, -14);
-    return {start: addDays(ovulation, -5), end: addDays(ovulation, 1), ovulation};
+    const ovulation = addDays(next, -OV_DAYS_BEFORE_PERIOD);
+    return {start: addDays(ovulation, -FERTILE_BEFORE), end: addDays(ovulation, FERTILE_AFTER), ovulation};
   }
   function computeAvgCycleLengthFromHistory(){
     const starts = periodStartDates().slice().sort();
@@ -1305,7 +1352,8 @@
     for(let i=1;i<starts.length;i++) diffs.push(daysBetween(starts[i-1], starts[i]));
     const valid = diffs.filter(d => d>=15 && d<=60);
     if(!valid.length) return null;
-    return Math.round(avg(valid));
+    // Recent cycles predict the next one best — use the last 6.
+    return Math.round(avg(valid.slice(-6)));
   }
   // Average actual period duration, from ranges where an end date was logged.
   function computeAvgPeriodLengthFromHistory(){
@@ -1481,11 +1529,11 @@
       const confirmed = isPhaseConfirmed(dateStr);
 
       const pill = document.createElement('div');
-      pill.className = 'day-pill' + (workedOut?' trained':'') + (isToday?' is-today':'') + (isSelected?' selected':'');
+      pill.className = 'day-pill' + (workedOut?' trained':'') + (isToday?' is-today':'') + (isSelected?' selected':'') + (isPeakFertileDay(dateStr)?' peak':'');
       pill.innerHTML = `
         <div class="dow">${DOW_LABELS[i]}</div>
         <div class="mark">${d.getDate()}</div>
-        <div class="cyc ${phase!=='unknown'?phase:''}${phase!=='unknown' && !confirmed ? ' predicted':''}"></div>
+        <div class="cyc ${phase!=='unknown'?phase:''}${phase!=='unknown' && !confirmed ? ' predicted':''}${isPreOvulationFertile(dateStr)?' pre-ov':''}${phase==='ovulation'?' fertile':''}"></div>
       `;
       pill.addEventListener('click', () => handleCalendarDayClick(dateStr, trained));
       strip.appendChild(pill);
@@ -1577,9 +1625,9 @@
       const confirmed = isPhaseConfirmed(dateStr);
       const predictedPeriod = phase === 'period' && !confirmed;
       const hasSession = sessionDates.has(dateStr);
-      cells += `<div class="month-cell${isToday?' is-today':''}${isSelected?' selected':''}${predictedPeriod?' predicted-period':''}" data-date="${dateStr}">
+      cells += `<div class="month-cell${isToday?' is-today':''}${isSelected?' selected':''}${predictedPeriod?' predicted-period':''}${isPeakFertileDay(dateStr)?' peak':''}" data-date="${dateStr}">
         <span class="mc-num">${day}</span>
-        <span class="mc-phase ${phase!=='unknown'?phase:''}${phase!=='unknown' && !confirmed ? ' predicted':''}"></span>
+        <span class="mc-phase ${phase!=='unknown'?phase:''}${phase!=='unknown' && !confirmed ? ' predicted':''}${isPreOvulationFertile(dateStr)?' pre-ov':''}${phase==='ovulation'?' fertile':''}"></span>
         ${hasSession?'<span class="mc-dot"></span>':''}
       </div>`;
     }
@@ -1597,7 +1645,10 @@
           <span class="legend-item"><span class="legend-dot period"></span>Period</span>
           <span class="legend-item"><span class="legend-dot predicted-period"></span>Predicted period</span>
           <span class="legend-item"><span class="legend-dot follicular"></span>Follicular</span>
+          <span class="legend-item"><span class="legend-dot" style="background:#F0D3A4;"></span>Fertile</span>
           <span class="legend-item"><span class="legend-dot ovulation"></span>Ovulation</span>
+          <span class="legend-item"><span class="legend-dot" style="background:transparent; border-radius:0; height:0; width:14px; border-top:2.5px dotted var(--amber);"></span>Most fertile days</span>
+          <span class="legend-item"><span class="legend-dot" style="background:transparent; box-shadow:0 0 0 1.5px var(--amber);"></span>Ovulation starts</span>
           <span class="legend-item"><span class="legend-dot luteal"></span>Luteal</span>
           <span class="legend-item"><span class="mc-dot" style="position:static; background:var(--steel);"></span>Logged workout</span>
         </div>
@@ -3972,7 +4023,7 @@
       <div class="stat"><div class="v" style="font-size:15px;">${next?fmtDate(next):'–'}</div><div class="l">${daysToNext!==null?'Next in '+daysToNext+'d':'Next period'}</div></div>
     </div>`;
     if(fertile){
-      html += `<div class="fertile-banner">${inFertileWindow?'You’re in your fertile window — ':'Fertile window: '}${fmtDate(fertile.start)}–${fmtDate(fertile.end)} · estimated ovulation ${fmtDate(fertile.ovulation)}</div>`;
+      html += `<div class="fertile-banner">${inFertileWindow?'You’re in your most fertile days — ':'Most fertile days: '}${fmtDate(fertile.start)}–${fmtDate(fertile.end)} · ovulation starts ${fmtDate(fertile.ovulation)}</div>`;
     }
     wrap.innerHTML = html;
   }
