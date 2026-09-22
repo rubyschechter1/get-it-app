@@ -6,7 +6,9 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#18171B">
-<title>Get It</title>
+<title>Ruby Lifts</title>
+<meta name="apple-mobile-web-app-title" content="Ruby Lifts">
+<meta name="application-name" content="Ruby Lifts">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;500;600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
@@ -245,6 +247,14 @@
 
   .exercise-head .name-wrap{display:flex; flex-direction:column; gap:2px;}
   .exercise-head .variation-sub{font-family:var(--font-mono); font-size:11px; color:var(--text-faint);}
+  .muscle-line{padding:0 14px 8px; font-size:11px; color:var(--text-faint); display:flex; flex-wrap:wrap; gap:4px; align-items:center;}
+  .muscle-line .m-pri{color:var(--text); background:rgba(124,159,190,0.18); border-radius:20px; padding:1px 8px; font-weight:500;}
+  .muscle-line .m-sec{color:var(--text-dim); border:1px solid var(--line); border-radius:20px; padding:0 7px;}
+  .sec-chips{display:flex; flex-wrap:wrap; gap:5px; margin-top:6px;}
+  .sec-chip{font-size:11px; padding:3px 9px; border-radius:20px; border:1px solid var(--line); background:transparent; color:var(--text-faint); cursor:pointer; font-family:var(--font-body);}
+  .sec-chip.on{background:rgba(124,159,190,0.16); border-color:var(--steel-dim); color:var(--text);}
+  .mg-legend{display:flex; gap:12px; font-size:10px; color:var(--text-faint); margin:0 0 10px; font-family:var(--font-mono);}
+  .mg-legend i{display:inline-block; width:9px; height:9px; border-radius:2px; margin-right:4px; vertical-align:-1px;}
   .note-prev{padding:0 14px 8px; font-size:11px; color:var(--text-dim); font-style:italic; line-height:1.4;}
   .note-prev .nd{font-family:var(--font-mono); font-style:normal; color:var(--text-faint); margin-right:4px;}
   .note-wrap{padding:0 14px 10px;}
@@ -401,8 +411,9 @@
   .mg-row-head{display:flex; justify-content:space-between; align-items:baseline; margin-bottom:4px;}
   .mg-row-head .name{font-size:13px; color:var(--text);}
   .mg-row-head .count{font-family:var(--font-mono); font-size:12px; color:var(--text-dim);}
-  .mg-bar-track{height:7px; border-radius:4px; background:var(--surface-raised); overflow:hidden;}
-  .mg-bar-fill{height:100%; border-radius:4px; background:var(--steel-dim);}
+  .mg-bar-track{height:7px; border-radius:4px; background:var(--surface-raised); overflow:hidden; display:flex;}
+  .mg-bar-fill{height:100%; border-radius:4px; background:var(--steel);}
+  .mg-bar-fill.indirect{background:var(--steel-dim); border-radius:0 4px 4px 0;}
 
   .cycle-log-entry{padding:10px 2px; border-bottom:1px solid var(--line);}
   .cycle-log-entry:last-child{border-bottom:none;}
@@ -515,7 +526,7 @@
 
   <header>
     <div class="brand">
-      <h1>GET <span>IT</span></h1>
+      <h1>RUBY <span>LIFTS</span></h1>
       <div class="brand-right">
         <div class="date-today" id="headerDate">—</div>
         <button class="unit-toggle" id="unitToggleBtn" title="Switch weight unit">LB</button>
@@ -607,11 +618,6 @@
       </div>
       <div id="fullLogCard"></div>
 
-      <div class="row" style="margin:22px 0 10px;">
-        <h2 class="section-title" style="margin:0;">Program consistency</h2>
-      </div>
-      <div class="hint" style="margin-top:-6px;">Last 8 weeks — how often each planned exercise actually got done, and whether it's still improving where it sits in your program.</div>
-      <div id="consistencyCard"></div>
 
       <div class="row" style="margin:22px 0 10px;">
         <h2 class="section-title" id="muscleVolumeTitle" style="margin:0;">Sets by muscle group — this week</h2>
@@ -773,7 +779,124 @@
   ];
   const DOW_LABELS = ['S','M','T','W','T','F','S'];
 
-  const MUSCLE_GROUPS = ['Quads','Hamstrings','Glutes','Calves','Chest','Back','Shoulders','Biceps','Triceps','Abs','Other'];
+  const MUSCLE_GROUPS = ['Quads','Hamstrings','Glutes','Adductors','Calves','Chest','Back','Shoulders','Biceps','Triceps','Abs','Other'];
+
+  // ---------- EXERCISE MUSCLE MAP ----------
+  // Standard target-vs-assisting muscle classifications for common lifts.
+  // Main muscle = counts as 1 set; "also works" muscles = ½ set each (the
+  // fractional-volume convention). Used to auto-tag movements, and as the
+  // source for the common exercises added to the movement bank. Every tag
+  // stays editable in the plan / bank editors.
+  // Fields: n = name, a = aliases, p = main, s = assisting, v = variations,
+  // bb = barbell, uni = per-hand ×2, one = single-arm, bank = add to bank.
+  const EXERCISE_LIBRARY = [
+    // Hinge / posterior chain
+    {n:'RDL', a:['romanian deadlift','stiff leg deadlift'], p:'Hamstrings', s:['Glutes','Back'], bb:true},
+    {n:'Deadlift', a:['conventional deadlift','trap bar deadlift'], p:'Glutes', s:['Back','Hamstrings','Quads'], bb:true},
+    {n:'Single Leg Deadlift', a:['single leg rdl','sl rdl','single-leg deadlift'], p:'Hamstrings', s:['Glutes','Back']},
+    {n:'Sumo Deadlift', p:'Glutes', s:['Adductors','Hamstrings'], bb:true, bank:true},
+    {n:'Good Morning', p:'Hamstrings', s:['Glutes','Back'], bb:true, bank:true},
+    {n:'Hip Thrust', a:['barbell hip thrust'], p:'Glutes', s:['Adductors','Quads'], bb:true},
+    {n:'Glute Bridge', p:'Glutes', s:['Hamstrings'], bank:true},
+    {n:'Kettlebell Swing', p:'Glutes', s:['Hamstrings'], bank:true},
+    {n:'Back Extension', a:['hyperextension','45 degree back extension'], p:'Back', s:['Glutes','Hamstrings'], bank:true},
+    {n:'Cable Kickback', a:['glute kickback'], p:'Glutes', s:[], one:true, bank:true},
+    {n:'Leg Curl', a:['hamstring curl','lying leg curl','seated leg curl'], p:'Hamstrings', s:[], v:['Seated Leg Curl','Lying Leg Curl'], bank:true},
+    // Squat / lunge
+    {n:'Back Squat', a:['squat','barbell squat'], p:'Quads', s:['Glutes'], bb:true, bank:true},
+    {n:'Front Squat', p:'Quads', s:['Glutes'], bb:true},
+    {n:'Goblet Squat', a:['elevated goblet squat','goblet / front squat'], p:'Quads', s:['Glutes']},
+    {n:'Leg Press', p:'Quads', s:['Glutes'], bank:true},
+    {n:'Hack Squat', p:'Quads', s:['Glutes'], bank:true},
+    {n:'Leg Extension', p:'Quads', s:[], bank:true},
+    {n:'Bulgarian Split Squat', a:['split squat','rear foot elevated split squat'], p:'Quads', s:['Glutes','Adductors'], uni:true},
+    {n:'Walking Lunge', a:['walking lunges','lunge','lunges'], p:'Quads', s:['Glutes'], uni:true},
+    {n:'Front-Foot-Elevated Lunge', a:['elevated front leg lunge','front foot elevated lunge'], p:'Quads', s:['Glutes'], uni:true},
+    {n:'Reverse Lunge', p:'Quads', s:['Glutes'], uni:true, bank:true},
+    {n:'Step-Up', a:['step up','step ups'], p:'Quads', s:['Glutes'], uni:true, bank:true},
+    {n:'Abductor Machine', a:['hip abduction','abduction machine','abductor'], p:'Glutes', s:[]},
+    {n:'Adductor Machine', a:['hip adduction','adduction machine','adductor'], p:'Adductors', s:[], bank:true},
+    {n:'Calf Raise', a:['standing calf raise','seated calf raise','calf raises'], p:'Calves', s:[], v:['Standing Calf Raise','Seated Calf Raise'], bank:true},
+    // Chest
+    {n:'Chest Press', a:['flat dumbbell chest press','incline dumbbell chest press','dumbbell bench press','dumbbell chest press','machine chest press'], p:'Chest', s:['Triceps','Shoulders']},
+    {n:'Bench Press', a:['barbell bench press','flat bench press'], p:'Chest', s:['Triceps','Shoulders'], bb:true, bank:true},
+    {n:'Incline Bench Press', a:['incline barbell bench press'], p:'Chest', s:['Triceps','Shoulders'], bb:true, bank:true},
+    {n:'Push-Up', a:['push up','push ups','pushups'], p:'Chest', s:['Triceps','Shoulders'], bank:true},
+    {n:'Chest Fly', a:['cable fly','dumbbell fly','pec deck','fly','flyes'], p:'Chest', s:['Shoulders'], v:['Cable Fly','Dumbbell Fly','Pec Deck'], bank:true},
+    {n:'Dips', a:['dip','tricep dips','chest dips','assisted dip'], p:'Triceps', s:['Chest','Shoulders'], bank:true},
+    // Back
+    {n:'Row', a:['cable row','seated cable row','dumbbell row','single arm dumbbell row'], p:'Back', s:['Biceps']},
+    {n:'Barbell Row', a:['bent over row','bent-over row'], p:'Back', s:['Biceps'], bb:true, bank:true},
+    {n:'T-Bar Row', a:['t bar row'], p:'Back', s:['Biceps'], bank:true},
+    {n:'Lat Pulldown', a:['underhand lat pulldown','wide grip lat pulldown','pulldown'], p:'Back', s:['Biceps']},
+    {n:'Pull-Up', a:['pull up','pull ups','chin up','chin-up','assisted pull-up'], p:'Back', s:['Biceps'], v:['Assisted Pull-Up','Pull-Up','Chin-Up'], bank:true},
+    {n:'Straight-Arm Pulldown', a:['straight arm pulldown'], p:'Back', s:[], bank:true},
+    {n:'Face Pull', a:['face pulls'], p:'Shoulders', s:['Back']},
+    // Shoulders
+    {n:'Shoulder Press', a:['dumbbell shoulder press','seated shoulder press'], p:'Shoulders', s:['Triceps']},
+    {n:'Overhead Press', a:['barbell overhead press','military press','ohp'], p:'Shoulders', s:['Triceps'], bb:true, bank:true},
+    {n:'Arnold Press', p:'Shoulders', s:['Triceps'], bank:true},
+    {n:'Lateral Raise', a:['lateral raises','side raise','cable lateral raise'], p:'Shoulders', s:[]},
+    {n:'Rear Delt Fly', a:['reverse fly','rear delt raise','reverse pec deck'], p:'Shoulders', s:['Back'], bank:true},
+    // Arms
+    {n:'Bicep Curl', a:['biceps curl','dumbbell curl','barbell curl'], p:'Biceps', s:[]},
+    {n:'Hammer Curl', p:'Biceps', s:[], bank:true},
+    {n:'Preacher Curl', p:'Biceps', s:[], bank:true},
+    {n:'Tricep Extension', a:['triceps extension'], p:'Triceps', s:[]},
+    {n:'Overhead Tricep Extension', a:['overhead triceps extension'], p:'Triceps', s:[], bank:true},
+    {n:'Tricep Pushdown', a:['triceps pushdown','rope pushdown','cable pushdown'], p:'Triceps', s:[], bank:true},
+    {n:'Skull Crusher', a:['skull crushers','lying tricep extension'], p:'Triceps', s:[], bank:true},
+    // Core
+    {n:'Abs', a:['horizontal cable rotation','kneeling wood chopper','weighted dead bug','dead bug','wood chopper','suitcase march'], p:'Abs', s:[]},
+    {n:'Suitcase March', p:'Abs', s:[], one:true},
+    {n:'Plank', a:['side plank'], p:'Abs', s:[], bank:true},
+    {n:'Cable Crunch', a:['crunch','crunches'], p:'Abs', s:[], bank:true},
+    {n:'Hanging Leg Raise', a:['leg raise','leg raises','hanging knee raise'], p:'Abs', s:[], bank:true},
+    {n:'Pallof Press', p:'Abs', s:[], bank:true},
+  ];
+  const normEx = (x) => (x||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+  const LIB_INDEX = (() => {
+    const m = new Map();
+    EXERCISE_LIBRARY.forEach(e => {
+      [e.n, ...(e.a||[]), ...(e.v||[])].forEach(k => { const nk = normEx(k); if(!m.has(nk)) m.set(nk, e); });
+    });
+    return m;
+  })();
+  // Best library match for a movement / variation name: exact (or alias),
+  // then plural-tolerant, then keyword-based for names like "Seated Cable Row".
+  function libraryMatch(name){
+    const k = normEx(name);
+    if(!k) return null;
+    if(LIB_INDEX.has(k)) return LIB_INDEX.get(k);
+    const sing = k.replace(/s\b/g, '');
+    for(const [key, e] of LIB_INDEX){ if(key.replace(/s\b/g,'') === sing) return e; }
+    const rules = [
+      [/deadlift|rdl/, 'Deadlift'], [/hip thrust|glute bridge/, 'Hip Thrust'], [/squat/, 'Back Squat'],
+      [/lunge|split squat|step up/, 'Walking Lunge'], [/leg press/, 'Leg Press'], [/leg curl|hamstring curl/, 'Leg Curl'],
+      [/leg extension/, 'Leg Extension'], [/calf/, 'Calf Raise'], [/abduct/, 'Abductor Machine'], [/adduct/, 'Adductor Machine'],
+      [/incline.*press|bench|chest press|push up/, 'Chest Press'], [/fly|flye|pec deck/, 'Chest Fly'],
+      [/pulldown|pull up|chin up/, 'Lat Pulldown'], [/row/, 'Row'], [/face pull|rear delt|reverse fly/, 'Rear Delt Fly'],
+      [/lateral raise|side raise/, 'Lateral Raise'], [/shoulder press|overhead press|military/, 'Shoulder Press'],
+      [/curl/, 'Bicep Curl'], [/tricep|triceps|pushdown|skull/, 'Tricep Extension'],
+      [/crunch|plank|dead bug|chop|rotation|twist|leg raise|pallof|ab /, 'Abs'],
+    ];
+    for(const [re, n] of rules){ if(re.test(k + ' ')) return LIB_INDEX.get(normEx(n)) || null; }
+    return null;
+  }
+  // Fills in main / assisting muscles for a plan or bank slot that hasn't
+  // been tagged yet. Never overrides a main muscle the person picked; only
+  // fills 'Other'. Returns true if anything changed.
+  function autoTagMuscles(slotDef){
+    if(!slotDef) return false;
+    const hit = libraryMatch(slotDef.target) || (slotDef.variations||[]).map(libraryMatch).find(Boolean);
+    let changed = false;
+    if(hit && (!slotDef.muscleGroup || slotDef.muscleGroup === 'Other')){ slotDef.muscleGroup = hit.p; changed = true; }
+    if(!Array.isArray(slotDef.secondaryMuscles)){
+      slotDef.secondaryMuscles = hit ? hit.s.filter(m => m !== slotDef.muscleGroup) : [];
+      changed = true;
+    }
+    return changed;
+  }
 
   // A "slot" is a target movement (e.g. "Row"). It can have several
   // interchangeable variations (Cable Row / Dumbbell Row) that count as the
@@ -992,10 +1115,82 @@
         barWeight: s.barbell ? (s.barWeight || 45) : null,
         singleArm: !!s.singleArm,
         muscleGroup: s.muscleGroup || 'Other',
+        secondaryMuscles: Array.isArray(s.secondaryMuscles) ? [...s.secondaryMuscles] : undefined,
       });
       changed = true;
     }));
     if(changed) await saveMovementBank();
+  }
+
+  // One-time (per version): tag every plan + bank movement with main and
+  // assisting muscles, and add the common exercises from the library to the
+  // movement bank if they aren't there already (matched by name or alias,
+  // including variation names, so nothing gets duplicated).
+  // Tags revised after checking against StrengthLog's exercise directory.
+  // Only applied to movements still on the old default tags — anything the
+  // person edited by hand is left alone.
+  const MUSCLE_MAP_CORRECTIONS = [
+    {n:'Deadlift', oldP:'Hamstrings', oldS:['Glutes','Back']},
+    {n:'Hip Thrust', oldP:'Glutes', oldS:['Hamstrings']},
+    {n:'Bulgarian Split Squat', oldP:'Quads', oldS:['Glutes']},
+  ];
+  function applyMuscleCorrections(def){
+    const hit = libraryMatch(def.target);
+    if(!hit) return false;
+    const c = MUSCLE_MAP_CORRECTIONS.find(x => x.n === hit.n);
+    if(!c || def.muscleGroup !== c.oldP || !Array.isArray(def.secondaryMuscles)) return false;
+    const same = def.secondaryMuscles.length === c.oldS.length && c.oldS.every(m => def.secondaryMuscles.includes(m));
+    if(!same) return false;
+    def.muscleGroup = hit.p; def.secondaryMuscles = [...hit.s];
+    return true;
+  }
+  async function applyMuscleMap(){
+    for(const d of DAYS){
+      const plan = state.plans[d.id] || [];
+      const a = plan.map(autoTagMuscles).some(Boolean);
+      const b = plan.map(applyMuscleCorrections).some(Boolean);
+      if(a || b) await setJSON('plan:'+d.id, plan);
+    }
+    let bankChanged = state.movementBank.map(autoTagMuscles).some(Boolean);
+    if(state.movementBank.map(applyMuscleCorrections).some(Boolean)) bankChanged = true;
+    if(!getJSON('exercise-library-v1', false)){
+      const known = new Set();
+      const addKnown = (s) => [s.target, ...(s.variations||[])].forEach(n => {
+        known.add(normEx(n));
+        const hit = LIB_INDEX.get(normEx(n)); if(hit) known.add(normEx(hit.n));
+      });
+      state.movementBank.forEach(addKnown);
+      DAYS.forEach(d => (state.plans[d.id]||[]).forEach(addKnown));
+      const usedIds = new Set(state.movementBank.map(s => s.id));
+      EXERCISE_LIBRARY.filter(e => e.bank && !known.has(normEx(e.n))).forEach(e => {
+        state.movementBank.push({
+          id: stableSlotId('bank', e.n, usedIds), target: e.n, variations: e.v ? [...e.v] : [e.n],
+          unilateral: !!e.uni, barbell: !!e.bb, barWeight: e.bb ? 45 : null, singleArm: !!e.one,
+          muscleGroup: e.p, secondaryMuscles: [...e.s],
+        });
+        bankChanged = true;
+      });
+      setJSON('exercise-library-v1', true);
+    }
+    if(bankChanged) await setJSON('movement-bank', state.movementBank);
+  }
+
+  // Main + assisting muscles for any movement: the exact slot it was logged
+  // against when known, else wherever that movement name is defined, else
+  // straight from the library.
+  function musclesForDef(def){
+    if(!def) return null;
+    return {primary: def.muscleGroup || 'Other', secondary: Array.isArray(def.secondaryMuscles) ? def.secondaryMuscles : []};
+  }
+  function musclesForExercise(session, ex){
+    if(ex.slotId){
+      const slot = (state.plans[session.dayId] || []).find(s => s.id === ex.slotId);
+      if(slot) return musclesForDef(slot);
+    }
+    const def = findSlotDefinitionByTarget(ex.target);
+    if(def) return musclesForDef(def);
+    const hit = libraryMatch(ex.target) || libraryMatch(ex.variation);
+    return hit ? {primary: hit.p, secondary: hit.s} : {primary:'Other', secondary:[]};
   }
 
   // ---------- cycle math ----------
@@ -1200,6 +1395,7 @@
     }));
     state.movementBank = await loadMovementBank();
     await backfillMovementBankFromPlans();
+    await applyMuscleMap();
     refreshBankBtnLabel();
     await buildLastVariationMap();
 
@@ -1770,6 +1966,12 @@
     return `<div class="note-pin"><span class="pin-ic">📌</span><span class="pin-txt">${escapeHtml(pin)}</span><button class="pin-edit" data-pinopen="${exIdx}">Edit</button></div>`;
   }
 
+  function muscleLineHtml(ex){
+    const m = musclesForExercise(state.session, ex);
+    if(!m || (m.primary === 'Other' && !m.secondary.length)) return '';
+    return `<div class="muscle-line"><span class="m-pri">${escapeHtml(m.primary)}</span>${m.secondary.map(x => `<span class="m-sec">${escapeHtml(x)}</span>`).join('')}</div>`;
+  }
+
   function prevNoteHtml(ex){
     const map = state.notesByTarget[noteKeyFor(ex.target, ex.variation)];
     if(!map) return '';
@@ -1917,6 +2119,7 @@
             <button class="icon-btn rm-exercise" data-idx="${exIdx}">✕</button>
           </div>
         </div>
+        ${muscleLineHtml(ex)}
         ${pinnedNoteHtml(ex, exIdx)}
         ${formatPrevLine(ex)}
         ${prevNoteHtml(ex)}
@@ -2152,8 +2355,17 @@
     if(!sel) return;
     const prevValue = sel.value;
     const names = allKnownMovementNames();
+    // Grouped by main muscle so the longer list stays easy to scan.
+    const byGroup = {};
+    names.forEach(n => {
+      const def = findSlotDefinitionByTarget(n);
+      const hit = def ? null : libraryMatch(n);
+      const g = (def && def.muscleGroup) || (hit && hit.p) || 'Other';
+      (byGroup[g] = byGroup[g] || []).push(n);
+    });
+    const opt = (n) => `<option value="${n.replace(/"/g,'&quot;')}">${n}</option>`;
     sel.innerHTML = '<option value="">Add a movement…</option>' +
-      names.map(n => `<option value="${n.replace(/"/g,'&quot;')}">${n}</option>`).join('') +
+      MUSCLE_GROUPS.filter(g => byGroup[g]).map(g => `<optgroup label="${g}">${byGroup[g].map(opt).join('')}</optgroup>`).join('') +
       '<option value="__custom__">＋ Custom / new movement…</option>';
     if(names.includes(prevValue) || prevValue === '__custom__') sel.value = prevValue;
   }
@@ -2193,7 +2405,9 @@
     // remembered in the bank so it shows up in this picker for every future day.
     if(isNew){
       const usedIds = new Set(state.movementBank.map(s => s.id));
-      state.movementBank.push({id: stableSlotId('bank', target, usedIds), target, variations:[target], unilateral:false, barbell:false, barWeight:null, singleArm:false, muscleGroup:'Other'});
+      const newDef = {id: stableSlotId('bank', target, usedIds), target, variations:[target], unilateral:false, barbell:false, barWeight:null, singleArm:false, muscleGroup:'Other'};
+      autoTagMuscles(newDef);
+      state.movementBank.push(newDef);
       await saveMovementBank();
     }
     sel.value = '';
@@ -2273,10 +2487,12 @@
           <button class="icon-btn rm-slot" data-idx="${sIdx}">✕</button>
         </div>
         <div class="field" style="margin:10px 0 12px;">
-          <label>Muscle group</label>
+          <label>Main muscle <span style="color:var(--text-faint); font-weight:400;">(1 set)</span></label>
           <select data-mg="${sIdx}">
             ${MUSCLE_GROUPS.map(g => `<option value="${g}" ${g===s.muscleGroup?'selected':''}>${g}</option>`).join('')}
           </select>
+          <label style="margin-top:10px;">Also works <span style="color:var(--text-faint); font-weight:400;">(½ set each)</span></label>
+          <div class="sec-chips" data-seclist="${sIdx}">${secChipsHtml(s, sIdx)}</div>
         </div>
         <div class="plan-edit-variations" data-varlist="${sIdx}"></div>
         <div class="plan-edit-add-var">
@@ -2359,6 +2575,7 @@
         barWeight: (source && source.barbell) ? (source.barWeight || 45) : null,
         singleArm: source ? !!source.singleArm : false,
         muscleGroup: source ? (source.muscleGroup || 'Other') : 'Other',
+        secondaryMuscles: source && Array.isArray(source.secondaryMuscles) ? [...source.secondaryMuscles] : undefined,
       });
       renderPlanEditor();
     });
@@ -2391,6 +2608,7 @@
     wrap.querySelectorAll('[data-mg]').forEach(sel => sel.addEventListener('change', () => {
       plan[+sel.dataset.mg].muscleGroup = sel.value;
     }));
+    wireMuscleEditors(wrap, plan, null);
     wrap.querySelectorAll('[data-bar]').forEach(cb => cb.addEventListener('change', () => {
       const i = +cb.dataset.bar;
       plan[i].barbell = cb.checked;
@@ -2446,6 +2664,7 @@
 
     $('savePlanEditBtn').addEventListener('click', async () => {
       const cleaned = plan.filter(s => s.target.trim() && s.variations.length);
+      cleaned.forEach(autoTagMuscles); // fills untagged / renamed-from-"New movement" slots
       const ok = await setJSON('plan:'+dayId, cleaned);
       state.plans[dayId] = cleaned;
       reorderSessionToMatchPlan(dayId, cleaned);
@@ -2468,6 +2687,35 @@
     });
   }
 
+  function secChipsHtml(s, sIdx){
+    const sec = Array.isArray(s.secondaryMuscles) ? s.secondaryMuscles : [];
+    return MUSCLE_GROUPS.filter(g => g !== 'Other' && g !== s.muscleGroup)
+      .map(g => `<button type="button" class="sec-chip ${sec.includes(g)?'on':''}" data-secidx="${sIdx}" data-secm="${g}">${g}</button>`).join('');
+  }
+  // Wires the "Also works" chips + main-muscle select for an editor list
+  // (a day plan or the bank). onChange runs after every edit (bank persists).
+  function wireMuscleEditors(wrap, list, onChange){
+    const rewire = (i) => {
+      const box = wrap.querySelector(`[data-seclist="${i}"]`);
+      if(!box) return;
+      box.innerHTML = secChipsHtml(list[i], i);
+      box.querySelectorAll('.sec-chip').forEach(b => b.addEventListener('click', () => {
+        const s = list[i], m = b.dataset.secm;
+        const sec = Array.isArray(s.secondaryMuscles) ? s.secondaryMuscles : (s.secondaryMuscles = []);
+        const at = sec.indexOf(m);
+        if(at === -1) sec.push(m); else sec.splice(at, 1);
+        rewire(i);
+        if(onChange) onChange();
+      }));
+    };
+    list.forEach((_, i) => rewire(i));
+    wrap.querySelectorAll('[data-mg]').forEach(sel => sel.addEventListener('change', () => {
+      const i = +sel.dataset.mg, s = list[i];
+      if(Array.isArray(s.secondaryMuscles)) s.secondaryMuscles = s.secondaryMuscles.filter(m => m !== s.muscleGroup);
+      rewire(i);
+    }));
+  }
+
   function renderPlanEditVariations(sIdx, plan){
     const list = document.querySelector(`.plan-edit-variations[data-varlist="${sIdx}"]`);
     if(!list) return;
@@ -2487,6 +2735,7 @@
   // scoped to a dayId.
   async function persistBank(){
     const cleaned = state.movementBank.filter(s => s.target && s.target.trim());
+    cleaned.forEach(s => { if(s.muscleGroup === 'Other') autoTagMuscles(s); });
     await setJSON('movement-bank', cleaned);
     populateAddExerciseSelect();
     refreshBankBtnLabel();
@@ -2514,10 +2763,12 @@
           <button class="icon-btn rm-slot" data-idx="${sIdx}">✕</button>
         </div>
         <div class="field" style="margin:10px 0 12px;">
-          <label>Muscle group</label>
+          <label>Main muscle <span style="color:var(--text-faint); font-weight:400;">(1 set)</span></label>
           <select data-mg="${sIdx}">
             ${MUSCLE_GROUPS.map(g => `<option value="${g}" ${g===s.muscleGroup?'selected':''}>${g}</option>`).join('')}
           </select>
+          <label style="margin-top:10px;">Also works <span style="color:var(--text-faint); font-weight:400;">(½ set each)</span></label>
+          <div class="sec-chips" data-seclist="${sIdx}">${secChipsHtml(s, sIdx)}</div>
         </div>
         <div class="plan-edit-variations" data-varlist="${sIdx}"></div>
         <div class="plan-edit-add-var">
@@ -2590,6 +2841,7 @@
       bank[+sel.dataset.mg].muscleGroup = sel.value;
       await persistBank();
     }));
+    wireMuscleEditors(wrap, bank, () => persistBank());
     wrap.querySelectorAll('[data-bar]').forEach(cb => cb.addEventListener('change', async () => {
       const i = +cb.dataset.bar;
       bank[i].barbell = cb.checked;
@@ -2941,6 +3193,30 @@
       </div>${r.note && r.note.trim() ? `<div class="fl-hist-note">${escapeHtml(r.note.trim())}</div>` : ''}`;
   }
 
+  // "Stalled" = over the last 8 weeks (deload days excluded), the top set's
+  // estimated strength hasn't moved: first vs latest within ±2%. Uses the same
+  // weight×reps estimate as topSet(), so adding reps at the same weight counts
+  // as progress (e.g. 15×12 → 15×16 is NOT stalled). Needs 3+ logs to judge.
+  const STALL_WEEKS = 8;
+  function isStalled(entries){
+    const since = currentWeekRange(-(STALL_WEEKS-1)).start;
+    const pts = entries
+      .filter(e => !e.missed && !e.deload && e.date >= since && e.sets && e.sets.length)
+      .map(e => {
+        const t = topSet(e.sets);
+        if(!t) return null;
+        const w = parseFloat(t.weight)||0, r = parseFloat(t.reps)||0;
+        return {date: e.date, score: w * (1 + r/30)};
+      })
+      .filter(Boolean)
+      .sort((a,b) => a.date < b.date ? -1 : 1);
+    if(pts.length < 3) return false;
+    const first = pts[0].score, latest = pts[pts.length-1].score;
+    if(!first) return false;
+    return Math.abs((latest-first)/first) <= 0.02;
+  }
+  const stallBadge = (entries) => isStalled(entries) ? ` <span class="ps-badge stall">Stalled</span>` : '';
+
   function fullLogPinHtml(target, variation){
     const pin = getPinnedNote(target, variation);
     return pin ? `<div class="fl-pin">📌 ${escapeHtml(pin)}</div>` : '';
@@ -2962,7 +3238,7 @@
     const historyHtml = fullLogPinHtml(slot.target, (slot.variations||[])[0]) + rows.map(fullLogHistRowHtml).join('');
     return `<div class="ps-row">
       <button class="fl-slot-toggle" data-fl-toggle="${key}">
-        <span class="ps-name">${escapeHtml(slot.target)}</span>
+        <span class="ps-name">${escapeHtml(slot.target)}${stallBadge(rows)}</span>
         <span class="ps-meta">${fullLogMetaHtml(doneCount, missedCount, open)}</span>
       </button>
       ${open ? `<div class="fl-history">${historyHtml}</div>` : ''}
@@ -2982,7 +3258,7 @@
     const historyHtml = fullLogPinHtml(slot.target, group.variation) + all.map(fullLogHistRowHtml).join('');
     return `<div class="ps-row">
       <button class="fl-slot-toggle" data-fl-toggle="${key}">
-        <span class="ps-name">${escapeHtml(slot.target)}${showBadge ? ` <span class="fl-variation-badge">${escapeHtml(group.variation)}</span>` : ''}</span>
+        <span class="ps-name">${escapeHtml(slot.target)}${showBadge ? ` <span class="fl-variation-badge">${escapeHtml(group.variation)}</span>` : ''}${stallBadge(entries)}</span>
         <span class="ps-meta">${fullLogMetaHtml(entries.length, misses.length, open)}</span>
       </button>
       ${open ? `<div class="fl-history">${historyHtml}</div>` : ''}
@@ -3160,7 +3436,6 @@
     }
     renderTrendsCard(sessions);
     await renderFullLogCard();
-    await renderConsistencyCard();
     await renderMuscleVolumeCard();
   }
   $('progressExerciseSelect').addEventListener('change', async () => {
@@ -3442,24 +3717,32 @@
 
     const sessions = await getAllSessions();
     const weekSessions = sessions.filter(s => s.date >= start && s.date <= end);
-    const counts = {};
+    // Main muscle gets 1 per set, each "also works" muscle gets ½ — the
+    // fractional-volume convention, so compound lifts count fairly without
+    // inflating totals. Checked-off sets count even without numbers typed.
+    const direct = {}, indirect = {};
     weekSessions.forEach(s => s.exercises.forEach(e => {
-      const logged = (e.sets||[]).filter(x => x.weight || x.reps).length;
-      if(!logged) return;
-      const group = muscleGroupForExercise(s, e);
-      counts[group] = (counts[group]||0) + logged;
+      const n = (e.sets||[]).filter(x => x.weight || x.reps || x.checked).length;
+      if(!n) return;
+      const m = musclesForExercise(s, e);
+      direct[m.primary] = (direct[m.primary]||0) + n;
+      m.secondary.forEach(g => { if(g !== m.primary) indirect[g] = (indirect[g]||0) + n*0.5; });
     }));
-
-    const rows = Object.keys(counts).map(g => ({group:g, count:counts[g]})).sort((a,b) => b.count - a.count);
+    const groups = new Set([...Object.keys(direct), ...Object.keys(indirect)]);
+    const rows = Array.from(groups).map(g => ({group:g, d:direct[g]||0, i:indirect[g]||0}))
+      .map(r => ({...r, total: r.d + r.i}))
+      .sort((a,b) => b.total - a.total || a.group.localeCompare(b.group));
     if(rows.length === 0){
       wrap.innerHTML = `<div class="empty">No logged sets this week yet.</div>`;
       return;
     }
-    const max = Math.max(...rows.map(r => r.count));
-    wrap.innerHTML = `<div class="card">` + rows.map(r => `
+    const max = Math.max(...rows.map(r => r.total));
+    const fmtN = (n) => (Math.round(n*2)/2).toString().replace(/\.0$/, '');
+    wrap.innerHTML = `<div class="card">
+      <div class="mg-legend"><span><i style="background:var(--steel);"></i>Main (1 set)</span><span><i style="background:var(--steel-dim);"></i>Also worked (½ set)</span></div>` + rows.map(r => `
       <div class="mg-row">
-        <div class="mg-row-head"><span class="name">${r.group}</span><span class="count">${r.count} set${r.count===1?'':'s'}</span></div>
-        <div class="mg-bar-track"><div class="mg-bar-fill" style="width:${Math.round(r.count/max*100)}%;"></div></div>
+        <div class="mg-row-head"><span class="name">${r.group}</span><span class="count">${fmtN(r.total)} set${r.total===1?'':'s'}${r.i ? ` <span style="color:var(--text-faint);">(${fmtN(r.d)} + ${fmtN(r.i)})</span>` : ''}</span></div>
+        <div class="mg-bar-track">${r.d ? `<div class="mg-bar-fill" style="width:${(r.d/max*100).toFixed(1)}%;${r.i?' border-radius:4px 0 0 4px;':''}"></div>` : ''}${r.i ? `<div class="mg-bar-fill indirect" style="width:${(r.i/max*100).toFixed(1)}%;${r.d?'':' border-radius:4px;'}"></div>` : ''}</div>
       </div>
     `).join('') + `</div>`;
   }
@@ -3865,7 +4148,7 @@
     renderBackupStatus();
 
     const out = $('exportResult');
-    const filename = `get-it-backup-${todayStr()}.json`;
+    const filename = `ruby-lifts-backup-${todayStr()}.json`;
     const blob = new Blob([json], {type:'application/json'});
     const url = URL.createObjectURL(blob);
 
@@ -3938,7 +4221,7 @@
       return;
     }
 
-    const filename = `get-it-sets-${todayStr()}.csv`;
+    const filename = `ruby-lifts-sets-${todayStr()}.csv`;
     const blob = new Blob([tsv], {type:'text/tab-separated-values'});
     const url = URL.createObjectURL(blob);
 
