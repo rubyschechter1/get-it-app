@@ -562,13 +562,12 @@
       <h2 class="section-title" id="weekOverviewTitle">This week's targets</h2>
       <div class="week-overview" id="weekOverview"></div>
 
-      <h2 class="section-title">Session</h2>
+      <h2 class="section-title">Session planner</h2>
       <div class="card">
+        <!-- Date is driven by the week/month calendar at the top; the input
+             stays (hidden) because the app reads the selected date from it. -->
+        <input type="date" id="logDate" style="display:none;">
         <div class="field">
-          <label>Date</label>
-          <input type="date" id="logDate">
-        </div>
-        <div class="field" style="margin-top:12px;">
           <label>Day plan to edit</label>
           <select id="planDaySelect"></select>
         </div>
