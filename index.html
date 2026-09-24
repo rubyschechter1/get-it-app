@@ -1706,6 +1706,12 @@
     btn.addEventListener('click', () => {
       if(btn.dataset.tab !== 'tab-log') flushAutosave();
       setActiveTab(btn.dataset.tab);
+      // Progress always opens at the top (Overall trends), not wherever the
+      // page happened to be scrolled on the previous tab.
+      if(btn.dataset.tab === 'tab-progress'){
+        window.scrollTo(0, 0);
+        requestAnimationFrame(() => window.scrollTo(0, 0)); // again after async content renders
+      }
     });
   });
 
@@ -2153,14 +2159,14 @@
     populateAddExerciseSelect();
 
     state.session.exercises.forEach((ex, exIdx) => {
-      const variations = ex.variations || (ex.slotId ? variationsForSlot(state.session.dayId, ex.slotId) : null);
+      const variations = cardVariations(ex);
       const block = document.createElement('div');
       block.className = 'exercise' + (ex.completed ? ' completed' : '');
       block.innerHTML = `
         <div class="exercise-head">
           <div class="name-wrap">
             <div class="name">${ex.target}</div>
-            ${variations && variations.length>1 ? '' : `<div class="variation-sub">${ex.variation}</div>`}
+
           </div>
           <div class="exercise-head-actions">
             <button class="uni-toggle bar-toggle ${ex.barbell?'on':''}" data-bartoggle="${exIdx}" title="Barbell: weight per side, plus the bar">BAR</button>
@@ -2178,7 +2184,7 @@
           <input type="number" inputmode="decimal" value="${displayWeight(ex.barWeight)}" data-barweight="${exIdx}">
           <span>${unitLabel()} · total = per side ×2 + bar</span>
         </div>` : ''}
-        ${variations && variations.length>1 ? `<div class="variation-row" data-varrow="${exIdx}"></div>` : ''}
+        <div class="variation-row" data-varrow="${exIdx}"></div>
         <div class="set-labels"><div></div><div>Weight</div><div>Reps</div><div>Rest</div><div></div><div></div></div>
         <div class="set-list" data-idx="${exIdx}"></div>
         <div class="exercise-foot">
@@ -2194,7 +2200,7 @@
         <button class="ex-save-btn ${ex.completed?'done':''}" data-checkidx="${exIdx}">${ex.completed ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>Saved' : 'Save'}</button>
       `;
       wrap.appendChild(block);
-      if(variations && variations.length>1) renderVariationChips(exIdx, variations);
+      renderVariationChips(exIdx, variations);
       renderSets(exIdx);
     });
 
@@ -2293,19 +2299,81 @@
     }));
   }
 
+  // Every variation of this movement the card can switch between: this
+  // day's own list, plus any variation of the same movement used on another
+  // day or in the bank (e.g. Flat vs Incline Chest Press), plus whatever is
+  // currently selected. De-duplicated ignoring capitalization.
+  function cardVariations(ex){
+    const own = ex.variations || (ex.slotId ? variationsForSlot(state.session.dayId, ex.slotId) : null) || [];
+    const out = [], seen = new Set();
+    [...own, ...allVariationsForTarget(ex.target), ex.variation].forEach(v => {
+      if(!v) return;
+      const k = v.trim().toLowerCase();
+      if(seen.has(k)) return;
+      seen.add(k); out.push(v);
+    });
+    return out;
+  }
+  let addVarOpenIdx = null; // card with the "add a variation" input open
+
   function renderVariationChips(exIdx, variations){
     const row = document.querySelector(`.variation-row[data-varrow="${exIdx}"]`);
     if(!row) return;
     const ex = state.session.exercises[exIdx];
+    const cur = (ex.variation||'').trim().toLowerCase();
     row.innerHTML = variations.map(v =>
-      `<button class="variation-chip ${v===ex.variation?'sel':''}" data-idx="${exIdx}" data-v="${v.replace(/"/g,'&quot;')}">${v}</button>`
-    ).join('');
-    row.querySelectorAll('.variation-chip').forEach(chip => chip.addEventListener('click', () => {
+      `<button class="variation-chip ${v.trim().toLowerCase()===cur?'sel':''}" data-idx="${exIdx}" data-v="${escapeHtml(v)}">${escapeHtml(v)}</button>`
+    ).join('') + (addVarOpenIdx === exIdx
+      ? `<span style="display:flex; gap:6px; align-items:center;"><input type="text" class="add-var-input" placeholder="New variation" style="width:140px; padding:5px 8px; font-size:12px;"><button class="variation-chip sel add-var-save">Add</button></span>`
+      : `<button class="variation-chip add-var-chip" title="Add a variation">＋</button>`);
+    row.querySelectorAll('.variation-chip[data-v]').forEach(chip => chip.addEventListener('click', () => {
       state.session.exercises[exIdx].variation = chip.dataset.v;
       renderExerciseList();
       scheduleAutosave();
     }));
+    const addBtn = row.querySelector('.add-var-chip');
+    if(addBtn) addBtn.addEventListener('click', () => {
+      addVarOpenIdx = exIdx;
+      renderVariationChips(exIdx, variations);
+      const inp = row.querySelector('.add-var-input'); if(inp) inp.focus();
+    });
+    const input = row.querySelector('.add-var-input');
+    const save = async () => {
+      const name = (input.value||'').trim();
+      addVarOpenIdx = null;
+      if(!name){ renderVariationChips(exIdx, variations); return; }
+      await addVariationToMovement(ex, name);
+      renderExerciseList();
+      scheduleAutosave();
+    };
+    if(input){
+      row.querySelector('.add-var-save').addEventListener('click', save);
+      input.addEventListener('keydown', e => { if(e.key === 'Enter') save(); if(e.key === 'Escape'){ addVarOpenIdx = null; renderVariationChips(exIdx, variations); } });
+    }
   }
+
+  // Saves a new variation onto the movement's definition (this day's plan slot
+  // if it has one, otherwise the bank entry) so it shows up every time, then
+  // selects it. Re-selects an existing one instead of adding a duplicate.
+  async function addVariationToMovement(ex, name){
+    const existing = cardVariations(ex).find(v => v.trim().toLowerCase() === name.toLowerCase());
+    if(existing){ ex.variation = existing; return; }
+    let def = null, isPlan = false;
+    if(ex.slotId){
+      def = (state.plans[state.session.dayId]||[]).find(sl => sl.id === ex.slotId) || null;
+      isPlan = !!def;
+    }
+    if(!def) def = state.movementBank.find(sl => sl.target === ex.target) || null;
+    if(def){
+      def.variations = def.variations || [];
+      def.variations.push(name);
+      if(isPlan) await setJSON('plan:'+state.session.dayId, state.plans[state.session.dayId]);
+      else await setJSON('movement-bank', state.movementBank);
+    }
+    if(Array.isArray(ex.variations)) ex.variations.push(name);
+    ex.variation = name;
+  }
+
 
   function weightTotalLabel(ex, weightValDisplay){
     // weightValDisplay is already in the CURRENT display unit (what's shown
