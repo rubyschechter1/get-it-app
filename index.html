@@ -91,6 +91,7 @@
     background:var(--surface); border:1px solid var(--line);
   }
   .day-pill.trained .mark{background:var(--steel-dim); color:#fff; border-color:var(--steel);}
+  .day-pill.deload .mark{background:rgba(225,168,87,0.22); color:var(--amber); border-color:var(--amber);}
   .day-pill.is-today .dow{color:var(--amber); font-weight:600;}
   .day-pill.selected{border-color:var(--steel); background:var(--surface);}
   .day-pill.selected .mark{box-shadow:0 0 0 1px var(--steel);}
@@ -145,6 +146,7 @@
   .month-cell .mc-phase.predicted{opacity:0.45;}
   .month-cell.predicted-period{border:1.5px dashed var(--rose); background:rgba(204,135,144,0.07);}
   .month-cell .mc-dot{position:absolute; top:3px; right:3px; width:4px; height:4px; border-radius:50%; background:var(--steel);}
+  .month-cell .mc-dot.deload{background:var(--amber);}
   .phase-legend{display:flex; flex-wrap:wrap; gap:10px; margin-top:10px; padding:0 2px;}
   .legend-item{display:flex; align-items:center; gap:5px; font-family:var(--font-mono); font-size:9px; color:var(--text-faint); text-transform:uppercase; letter-spacing:0.02em;}
   .legend-dot{width:8px; height:8px; border-radius:50%; flex:none;}
@@ -1017,6 +1019,36 @@
     muscleWeekOffset: 0, // separate week nav for the Progress tab's sets-by-muscle-group card
   };
 
+  // ---------- session storage: one record per date AND workout day ----------
+  // Older versions stored a single record per date ('session:YYYY-MM-DD'),
+  // so picking a different workout day for the same date replaced the data.
+  // Now each day's session lives at 'session:YYYY-MM-DD:dN'. Legacy records
+  // are still read (and migrated to the new key the next time they're saved).
+  const sessionKey = (date, dayId) => `session:${date}:${dayId}`;
+  function sessionIsBlank(s){
+    return !s.deload && !(s.exercises||[]).some(e =>
+      e.completed || (e.note && e.note.trim()) || (e.sets && e.sets.some(x => x.weight || x.reps)));
+  }
+  function loadStoredSession(date, dayId){
+    const s = getJSON(sessionKey(date, dayId), null);
+    if(s) return s;
+    const legacy = getJSON('session:'+date, null);
+    return (legacy && legacy.dayId === dayId) ? legacy : null;
+  }
+  function persistSession(sess){
+    const key = sessionKey(sess.date, sess.dayId);
+    // Don't write empty placeholder sessions just because a day was viewed.
+    if(sessionIsBlank(sess) && !loadStoredSession(sess.date, sess.dayId)) return true;
+    const ok = setJSON(key, sess);
+    if(ok){
+      const legacy = getJSON('session:'+sess.date, null);
+      if(legacy && legacy.dayId === sess.dayId){
+        try{ localStorage.removeItem(STORAGE_PREFIX + 'session:' + sess.date); }catch(e){}
+      }
+    }
+    return ok;
+  }
+
   function slugify(s){
     return String(s).toLowerCase().trim().replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'') || 'slot';
   }
@@ -1408,6 +1440,20 @@
   }
 
   // ---------- init ----------
+  // Which workout day to pre-select for a date: a day already logged on that
+  // date if there is one, otherwise whichever day comes next in the rotation
+  // after the most recent logged session. Not tied to the weekday.
+  async function defaultDayForDate(date){
+    const sessions = (await getAllSessions()).filter(s => !sessionIsBlank(s));
+    const onDate = sessions.filter(s => s.date === date);
+    if(onDate.length) return onDate[0].dayId;
+    const before = sessions.filter(s => s.date < date);
+    if(!before.length) return DAYS[0].id;
+    const last = before[before.length-1];
+    const idx = DAYS.findIndex(d => d.id === last.dayId);
+    return DAYS[(idx + 1) % DAYS.length].id;
+  }
+
   async function init(){
     $('logDate').value = todayStr();
     $('cycleDate').value = todayStr();
@@ -1456,10 +1502,8 @@
     $('cycleLength').value = state.cycleSettings.avgCycleLength;
     $('periodLength').value = state.cycleSettings.periodLength;
 
-    // default day select to today's weekday if it matches a training day
-    const todayDow = new Date().getDay();
-    const match = DAYS.find(d => d.dow === todayDow);
-    $('logDaySelect').value = match ? match.id : DAYS[0].id;
+    // default to today's logged day, else the next day in your rotation
+    $('logDaySelect').value = await defaultDayForDate(todayStr());
     $('planDaySelect').value = $('logDaySelect').value;
 
     renderHeader();
@@ -1502,6 +1546,7 @@
     sunday.setDate(today.getDate() - today.getDay() + state.weekOffset*7);
     const selectedDate = $('logDate').value || todayStr();
     const workedOutDates = await workoutDates();
+    const deloadSet = await deloadDates();
 
     const label = $('weekLabel');
     if(label){
@@ -1521,15 +1566,15 @@
       const d = new Date(sunday);
       d.setDate(sunday.getDate()+i);
       const dateStr = `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
-      const trained = DAYS.find(dd => dd.dow === i); // used only to pick the right day-plan on click
-      const workedOut = workedOutDates.has(dateStr);
+      const trained = null; // workout day is chosen with the picker, not by weekday
+      const workedOut = workedOutDates.has(dateStr) || deloadSet.has(dateStr);
       const isToday = dateStr === todayStr();
       const isSelected = dateStr === selectedDate;
       const phase = phaseForDate(dateStr);
       const confirmed = isPhaseConfirmed(dateStr);
 
       const pill = document.createElement('div');
-      pill.className = 'day-pill' + (workedOut?' trained':'') + (isToday?' is-today':'') + (isSelected?' selected':'') + (isPeakFertileDay(dateStr)?' peak':'');
+      pill.className = 'day-pill' + (workedOut?' trained':'') + (deloadSet.has(dateStr)?' deload':'') + (isToday?' is-today':'') + (isSelected?' selected':'') + (isPeakFertileDay(dateStr)?' peak':'');
       pill.innerHTML = `
         <div class="dow">${DOW_LABELS[i]}</div>
         <div class="mark">${d.getDate()}</div>
@@ -1594,6 +1639,13 @@
     return s.exercises.some(e => e.completed || (e.sets && e.sets.some(x => x.weight || x.reps)));
   }
 
+  async function deloadDates(){
+    const sessions = await getAllSessions();
+    const dates = new Set();
+    sessions.forEach(s => { if(s.deload) dates.add(s.date); });
+    return dates;
+  }
+
   async function workoutDates(){
     const sessions = await getAllSessions();
     const dates = new Set();
@@ -1614,6 +1666,7 @@
     const daysInMonth = new Date(year, month+1, 0).getDate();
     const selectedDate = $('logDate').value || todayStr();
     const sessionDates = await workoutDates();
+    const deloadSet = await deloadDates();
 
     let cells = '';
     for(let i=0;i<startOffset;i++) cells += `<div class="month-cell empty"></div>`;
@@ -1628,7 +1681,7 @@
       cells += `<div class="month-cell${isToday?' is-today':''}${isSelected?' selected':''}${predictedPeriod?' predicted-period':''}${isPeakFertileDay(dateStr)?' peak':''}" data-date="${dateStr}">
         <span class="mc-num">${day}</span>
         <span class="mc-phase ${phase!=='unknown'?phase:''}${phase!=='unknown' && !confirmed ? ' predicted':''}${isPreOvulationFertile(dateStr)?' pre-ov':''}${phase==='ovulation'?' fertile':''}"></span>
-        ${hasSession?'<span class="mc-dot"></span>':''}
+        ${deloadSet.has(dateStr) ? '<span class="mc-dot deload"></span>' : (hasSession ? '<span class="mc-dot"></span>' : '')}
       </div>`;
     }
 
@@ -1651,6 +1704,7 @@
           <span class="legend-item"><span class="legend-dot" style="background:transparent; box-shadow:0 0 0 1.5px var(--amber);"></span>Ovulation starts</span>
           <span class="legend-item"><span class="legend-dot luteal"></span>Luteal</span>
           <span class="legend-item"><span class="mc-dot" style="position:static; background:var(--steel);"></span>Logged workout</span>
+          <span class="legend-item"><span class="mc-dot" style="position:static; background:var(--amber);"></span>Deload</span>
         </div>
       </div>
     `;
@@ -1666,9 +1720,7 @@
     wrap.querySelectorAll('.month-cell[data-date]').forEach(cell => {
       cell.addEventListener('click', () => {
         const dateStr = cell.dataset.date;
-        const dow = new Date(dateStr+'T00:00:00').getDay();
-        const trained = DAYS.find(d => d.dow === dow);
-        handleCalendarDayClick(dateStr, trained);
+        handleCalendarDayClick(dateStr, null);
       });
     });
   }
@@ -1698,7 +1750,14 @@
       await renderCalendars();
       return;
     }
-    if(trained) $('logDaySelect').value = trained.id;
+    // Weekday no longer decides the workout day. If that date already has
+    // logged session(s) and none match the current picker, jump to the first;
+    // otherwise keep whichever day you've picked.
+    await flushAutosave();
+    const logged = (await getAllSessions()).filter(x => x.date === dateStr && !sessionIsBlank(x));
+    if(logged.length && !logged.some(x => x.dayId === $('logDaySelect').value)){
+      $('logDaySelect').value = logged[0].dayId;
+    }
     await loadSessionForCurrentSelection();
     setActiveTab('tab-log');
   }
@@ -1909,8 +1968,8 @@
       return;
     }
 
-    const saved = await getJSON('session:'+date, null);
-    if(saved && saved.dayId === dayId){
+    const saved = loadStoredSession(date, dayId);
+    if(saved){
       state.session = saved;
     } else {
       state.session = emptySession(dayId, date);
@@ -2979,7 +3038,7 @@
 
   // Saves the current session and refreshes everything derived from it.
   async function saveCurrentSession(){
-    const ok = await setJSON('session:'+state.session.date, state.session);
+    const ok = persistSession(state.session);
     state.session.exercises.forEach(e => {
       if(!e.target) return;
       const k = noteKeyFor(e.target, e.variation);
@@ -3120,7 +3179,7 @@
         </div>
       `).join('');
       return `<div class="wo-day">
-        <div class="wo-day-title"><span>${d.label} — ${d.type}</span><span class="frac">${doneCount}/${plan.length}</span></div>
+        <div class="wo-day-title"><span>${d.label} — ${d.type}${daySessions.some(x => x.deload) ? '<span class="deload-tag">Deload</span>' : ''}</span><span class="frac">${doneCount}/${plan.length}</span></div>
         ${rows || '<div class="hint" style="margin:0;">No movements planned yet.</div>'}
       </div>`;
     }).join('');
@@ -3130,8 +3189,16 @@
   async function getAllSessions(){
     const keys = await listKeys('session:');
     const results = await Promise.all(keys.map(k => getJSON(k, null)));
-    const sessions = results.filter(Boolean);
-    sessions.sort((a,b) => a.date < b.date ? -1 : 1);
+    const byKey = new Map();
+    keys.forEach((k, i) => {
+      const sess = results[i];
+      if(!sess) return;
+      const id = sess.date + '|' + sess.dayId;
+      const isNewKey = k.split(':').length > 2;
+      if(!byKey.has(id) || isNewKey) byKey.set(id, sess); // new-format record wins over a legacy duplicate
+    });
+    const sessions = Array.from(byKey.values());
+    sessions.sort((a,b) => a.date < b.date ? -1 : (a.date > b.date ? 1 : 0));
     return sessions;
   }
 
@@ -3257,7 +3324,7 @@
     const seenWeeks = new Set();
     const out = [];
     entries.forEach(e => {
-      const wk = weekRangeForDate(e.date).start;
+      const wk = weekRangeForDate(e.date).start + (e.deload ? '|deload' : '');
       if(seenWeeks.has(wk)) return;
       seenWeeks.add(wk);
       out.push(e);
@@ -4489,7 +4556,7 @@
       clearTimeout(autosaveTimer);
       autosaveTimer = null;
       if(state.session){
-        setJSON('session:'+state.session.date, state.session);
+        persistSession(state.session);
         state.session.exercises.forEach(e => {
           if(e.target && e.variation) state.lastVariationBySlot[e.target] = e.variation;
         });
@@ -4522,9 +4589,8 @@
     await renderCalendars();
     if(wasViewingOldToday){
       $('logDate').value = nowToday;
-      const todayDow = new Date().getDay();
-      const match = DAYS.find(d => d.dow === todayDow);
-      if(match) $('logDaySelect').value = match.id;
+      $('logDaySelect').value = await defaultDayForDate(nowToday);
+      $('planDaySelect').value = $('logDaySelect').value;
       await loadSessionForCurrentSelection();
     }
     if(wasViewingOldCycleToday){
