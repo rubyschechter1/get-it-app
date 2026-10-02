@@ -1026,8 +1026,17 @@
   // are still read (and migrated to the new key the next time they're saved).
   const sessionKey = (date, dayId) => `session:${date}:${dayId}`;
   function sessionIsBlank(s){
+    // "Blank" for the purposes of choosing defaults (no real logged work).
     return !s.deload && !(s.exercises||[]).some(e =>
       e.completed || (e.note && e.note.trim()) || (e.sets && e.sets.some(x => x.weight || x.reps)));
+  }
+  const stripStamp = (o) => { const c = {...o}; delete c.updatedAt; return JSON.stringify(c); };
+  // True only if the session is byte-for-byte what a freshly opened, never-
+  // touched session looks like. ANY change (timer started, a set ticked,
+  // rest typed, movement added, variation switched, deload...) makes it
+  // "touched" and it gets saved.
+  function sessionIsUntouched(sess){
+    return stripStamp(sess) === stripStamp(emptySession(sess.dayId, sess.date));
   }
   function loadStoredSession(date, dayId){
     const s = getJSON(sessionKey(date, dayId), null);
@@ -1036,10 +1045,11 @@
     return (legacy && legacy.dayId === dayId) ? legacy : null;
   }
   function persistSession(sess){
-    const key = sessionKey(sess.date, sess.dayId);
-    // Don't write empty placeholder sessions just because a day was viewed.
-    if(sessionIsBlank(sess) && !loadStoredSession(sess.date, sess.dayId)) return true;
-    const ok = setJSON(key, sess);
+    const stored = loadStoredSession(sess.date, sess.dayId);
+    if(!stored && sessionIsUntouched(sess)) return true; // just viewed — nothing to save
+    if(stored && stripStamp(stored) === stripStamp(sess)) return true; // no changes
+    sess.updatedAt = Date.now();
+    const ok = setJSON(sessionKey(sess.date, sess.dayId), sess);
     if(ok){
       const legacy = getJSON('session:'+sess.date, null);
       if(legacy && legacy.dayId === sess.dayId){
@@ -1074,6 +1084,19 @@
   // Keeps both day selectors' option text in sync after a rename — the
   // "today's workout" picker and the "day plan to edit" picker are
   // independent controls, but they list the same days.
+  // Adds a ✓ to each workout day that already has data on the selected date,
+  // so it's obvious where your numbers live when two days share a date.
+  async function updateDayPickerMarks(){
+    const sel = $('logDaySelect');
+    if(!sel) return;
+    const date = $('logDate').value;
+    const have = new Set((await getAllSessions()).filter(x => x.date === date).map(x => x.dayId));
+    Array.from(sel.options).forEach(opt => {
+      const d = DAYS.find(x => x.id === opt.value);
+      if(d) opt.textContent = `${d.label} — ${d.type}${have.has(d.id) ? '  ✓' : ''}`;
+    });
+  }
+
   function refreshDaySelectLabels(){
     ['logDaySelect', 'planDaySelect'].forEach(id => {
       const sel = $(id);
@@ -1444,9 +1467,11 @@
   // date if there is one, otherwise whichever day comes next in the rotation
   // after the most recent logged session. Not tied to the weekday.
   async function defaultDayForDate(date){
-    const sessions = (await getAllSessions()).filter(s => !sessionIsBlank(s));
-    const onDate = sessions.filter(s => s.date === date);
-    if(onDate.length) return onDate[0].dayId;
+    const all = await getAllSessions();
+    const onDate = all.filter(s => s.date === date)
+      .sort((a,b) => (b.updatedAt||0) - (a.updatedAt||0));
+    if(onDate.length) return onDate[0].dayId; // the one you touched most recently
+    const sessions = all.filter(s => !sessionIsBlank(s));
     const before = sessions.filter(s => s.date < date);
     if(!before.length) return DAYS[0].id;
     const last = before[before.length-1];
@@ -1754,7 +1779,8 @@
     // logged session(s) and none match the current picker, jump to the first;
     // otherwise keep whichever day you've picked.
     await flushAutosave();
-    const logged = (await getAllSessions()).filter(x => x.date === dateStr && !sessionIsBlank(x));
+    const logged = (await getAllSessions()).filter(x => x.date === dateStr)
+      .sort((a,b) => (b.updatedAt||0) - (a.updatedAt||0));
     if(logged.length && !logged.some(x => x.dayId === $('logDaySelect').value)){
       $('logDaySelect').value = logged[0].dayId;
     }
@@ -1981,6 +2007,7 @@
     setAutosaveStatus('');
     await renderProteinCard();
     renderSessionTimer();
+    updateDayPickerMarks();
   }
 
   $('logDate').addEventListener('change', loadSessionForCurrentSelection);
@@ -3066,6 +3093,7 @@
     });
     await renderCalendars();
     renderWeekOverview();
+    updateDayPickerMarks();
     await renderProgressExerciseOptions();
     renderCyclePerformanceCard();
     return ok;
